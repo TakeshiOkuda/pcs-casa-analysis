@@ -11,6 +11,7 @@ import sys
 import os
 import argparse
 import time
+import subprocess
 
 import logging
 from logging_setup import setup_logging
@@ -25,26 +26,23 @@ path2Casa  = '/users/tokuda/casa-latest'
 def initOptionsParser():
 
     parser = argparse.ArgumentParser(description="Parse command-line arguments.")
-    # ASDM file name
-    parser.add_argument('-f', '--file', default=None, help="EB name")
-    parser.add_argument('-f', '--file', dest='file', type='string', help='EB name')
-    # Polarizer file
-    parser.add_argument('-p', '--polarizer', dest='polarizer', type='string', help='Polarizer angles file')
-    # Xpol
-    parser.add_argument('-x', '--xpol', dest='xpol', action='store_true', default=False, help='Polarizer angles file')
-    # return
+    parser.add_argument('-f', '--file', dest='file', type=str, required=True, help='EB name (ASDM identifier).')
+    parser.add_argument('-p', '--polarizer', dest='polarizer', type=str, help='Polarizer angles file')
+    parser.add_argument('-x', '--xpol', dest='xpol', action='store_true', default=False,
+                        help='Enable analysis of cross-polarization data.')
+    parser.add_argument('--path2au', dest='path2au', type=str,
+                        default=os.environ.get('PATH_TO_AU', '/users/tokuda/local/scripts/analysis_scripts'),
+                        help='Path to the analysisUtils package (defaults to PATH_TO_AU or a local fallback).')
+    parser.add_argument('--path2casa', dest='path2casa', type=str,
+                        default=os.environ.get('PATH_TO_CASA', '/users/tokuda/casa-latest/lib/py/lib/python3.6/site-packages'),
+                        help='Path to the CASA python packages (defaults to PATH_TO_CASA or a local fallback).')
     return parser
 
 #------------------------------------------------------------------------------
 def checkOptions(args):
-    # Check an option of an ASDM file name
-    if (args.file == None):
-        print("-f option is needed to define asdm e.g uid://A002/Xdddd/X111... or uid___A002_Xdddd_X111...")
-        sys.exit(0)
-    else:
-        print(f"ExUid: {args.file}")
+    print(f"ExUid: {args.file}")
     # Check antenna
-    if (args.polarizer==None):
+    if args.polarizer is None:
         print("A file of polarizer angles is not specified. Skip an analysis of a polarizer rotation measurement.")
     else:
         if os.path.isfile(args.polarizer):
@@ -57,25 +55,27 @@ def checkOptions(args):
 def downloadASDM(args):
 
     # check ASDM name
-    if args.file.count('_')== 0:
+    if args.file.count('_') == 0:
         exportedASDM1 = args.file
-        exportedASDM2 = args.file.replace(':','_').replace('/','_')
+        exportedASDM2 = args.file.replace(':', '_').replace('/', '_')
     else:
         tmp_ASDM = args.file.split('_')
-        tmp_ASDM = list(filter(lambda s: s!= '', tmp_ASDM))
-        if len(tmp_ASDM)!=4:
-            exit
-        else:
-            exportedASDM1 = tmp_ASDM[0]+'://'+tmp_ASDM[1]+'/'+tmp_ASDM[2]+'/'+tmp_ASDM[3]
-            exportedASDM2 = args.file
+        tmp_ASDM = list(filter(lambda s: s != '', tmp_ASDM))
+        if len(tmp_ASDM) != 4:
+            logger.error('Unexpected ASDM identifier format: %s', args.file)
+            sys.exit(1)
+        exportedASDM1 = tmp_ASDM[0] + '://' + tmp_ASDM[1] + '/' + tmp_ASDM[2] + '/' + tmp_ASDM[3]
+        exportedASDM2 = args.file
 
-    # Download ASDM to local
-    if (os.path.isdir('./'+exportedASDM2) != True):
-        print("asdmExport... ")
-        execute='asdmExport %s' %(exportedASDM1)
-        os.system(execute)
+    if not os.path.isdir(f'./{exportedASDM2}'):
+        logger.info("asdmExport... ")
+        try:
+            subprocess.run(['asdmExport', exportedASDM1], check=True)
+        except subprocess.CalledProcessError as exc:
+            logger.error("asdmExport failed: %s", exc)
+            sys.exit(1)
     else:
-        print("asdmExport is skipped")
+        logger.info("asdmExport is skipped")
 
 #------------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -85,8 +85,8 @@ if __name__ == "__main__":
     checkOptions(args)
 
     # Configure external module paths
-    path2au = args.path2au or '/users/tokuda/local/scripts/analysis_scripts'
-    path2casa = args.path2casa or '/users/tokuda/casa-latest/lib/py/lib/python3.6/site-packages'
+    path2au = args.path2au
+    path2casa = args.path2casa
 
     os.environ['PATH_TO_AU'] = path2au
     os.environ['PATH_TO_CASA'] = path2casa
@@ -116,7 +116,7 @@ if __name__ == "__main__":
         logger.error(f"Failed to import required modules: {e}")
         sys.exit(1)
 
-    logger.info('Step-1: Downloadin ASDM is running...')
+    logger.info('Step-1: Downloading ASDM is running...')
     downloadASDM(args)
 
     # Prepare for the analysis
