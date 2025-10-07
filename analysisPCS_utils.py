@@ -176,6 +176,38 @@ PolPCS = {'3': +40.0,
 "Coordinates of the ALMA Antenna Pads at the AOS in the ITRF (2000) Frame"
 Doc.#: SCID-20.02.04.00-0007-B-REP
 """
+def _configure_axis(ax, xlim, ylim, xlabel, ylabel):
+    """Apply common styling to antenna position plots."""
+
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_aspect('equal')
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.tick_params(axis='both', which='major')
+    ax.grid(visible=True, linestyle='dashed')
+
+
+def _plot_antennas(ax_configs, antennas, pcs_enu):
+    """Render antenna and PCS positions across multiple axes."""
+
+    for ant in antennas:
+        x, y = ant['ant_enu'][:2]
+        for config in ax_configs:
+            ax = config['ax']
+            ax.plot(x, y, '.', color='r')
+            if config.get('label_antennas'):
+                ax.text(x, y, ant['name'])
+
+    for config in ax_configs:
+        ax = config['ax']
+        ax.plot(pcs_enu[0], pcs_enu[1], '*', color='r', markersize=12)
+        if config.get('label_pcs'):
+            ax.text(pcs_enu[0], pcs_enu[1], 'PCS')
+        ax.plot([pcs_enu[0], 0], [pcs_enu[1], 0], linestyle='dotted', color='b')
+        _configure_axis(ax, config['xlim'], config['ylim'], config['xlabel'], config['ylabel'])
+
+
 def showPCSPosition(vis, debug=False):
 
     geometry = _prepare_geometry(vis, debug=debug)
@@ -195,6 +227,27 @@ def showPCSPosition(vis, debug=False):
 
     plt.ioff()
     fig, axs = plt.subplots(1, 2, dpi=100)
+
+    ax_configs = (
+        {
+            'ax': axs[0],
+            'xlim': (-1000, 1000),
+            'ylim': (-6000, 0),
+            'xlabel': "X [m]",
+            'ylabel': "Y [m]",
+            'label_antennas': False,
+            'label_pcs': True,
+        },
+        {
+            'ax': axs[1],
+            'xlim': (-500, 500),
+            'ylim': (-2000, -400),
+            'xlabel': "X [m]",
+            'ylabel': "Y [m]",
+            'label_antennas': True,
+            'label_pcs': False,
+        },
+    )
 
     csv_path = repdir / f"{prefix}_antenna.csv"
     header = ['AntID', 'Antenna', 'Az', 'El', 'Distance1', 'Distance2', 'Alpha']
@@ -233,32 +286,7 @@ def showPCSPosition(vis, debug=False):
                 ant['axis_angle'],
             ])
 
-            axs[0].plot(ant['ant_enu'][0], ant['ant_enu'][1], '.', color='r')
-            axs[1].plot(ant['ant_enu'][0], ant['ant_enu'][1], '.', color='r')
-            axs[1].text(ant['ant_enu'][0], ant['ant_enu'][1], ant['name'])
-
-    pcs_enu = geometry['pcs_enu']
-    axs[0].plot(pcs_enu[0], pcs_enu[1], '*', color='r', markersize=12)
-    axs[0].text(pcs_enu[0], pcs_enu[1], 'PCS')
-
-    axs[0].plot([pcs_enu[0], 0], [pcs_enu[1], 0], linestyle='dotted', color='b')
-    axs[1].plot([pcs_enu[0], 0], [pcs_enu[1], 0], linestyle='dotted', color='b')
-
-    axs[0].set_xlim(-1000, 1000)
-    axs[0].set_ylim(-6000, 0)
-    axs[0].set_aspect('equal')
-    axs[0].set_xlabel("X [m]")
-    axs[0].set_ylabel("Y [m]")
-    axs[0].tick_params(axis='both', which='major')
-    axs[0].grid(visible=True, linestyle='dashed')
-
-    axs[1].set_xlim(-500, 500)
-    axs[1].set_ylim(-2000, -400)
-    axs[1].set_aspect('equal')
-    axs[1].set_xlabel("X [m]")
-    axs[1].set_ylabel("Y [m]")
-    axs[1].tick_params(axis='both', which='major')
-    axs[1].grid(visible=True, linestyle='dashed')
+    _plot_antennas(ax_configs, geometry['antennas'], geometry['pcs_enu'])
 
     fig.savefig(repdir / f"{prefix}_ArrayConfig.png")
     fig.clf()
