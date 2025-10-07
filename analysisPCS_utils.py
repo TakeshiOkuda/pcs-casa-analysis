@@ -5,7 +5,9 @@ PCS analysis utilities: only for personal use
 """
 import os, sys
 import csv
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable, List, Optional
 
 import numpy as np
 from scipy.signal import savgol_filter
@@ -58,6 +60,51 @@ SIMUTIL = simutil.simutil()
 PCS_GEODETIC = np.array([-67.755761, -23.069533, 5346.0 + 42.126])
 
 
+@dataclass
+class AntennaDebugInfo:
+    """Detailed coordinate breakdown for debugging antenna locations."""
+
+    pad_itrf: np.ndarray
+    ant_vector: np.ndarray
+    corr_itrf: np.ndarray
+    ant_itrf: np.ndarray
+    ant_enu_manual: np.ndarray
+
+
+@dataclass
+class AntennaGeometry:
+    """Geometric information describing a single antenna."""
+
+    id: int
+    name: str
+    pad_enu: np.ndarray
+    ant_enu: np.ndarray
+    relative_to_pcs: np.ndarray
+    azimuth: float
+    elevation: float
+    distance: float
+    horizontal_distance: float
+    axis_angle: float
+    debug: Optional[AntennaDebugInfo] = None
+
+
+@dataclass
+class PCSGeometry:
+    """Collection of geometry information shared across PCS utilities."""
+
+    asdm: str
+    cofa: np.ndarray
+    cofa_lat: float
+    cofa_long: float
+    pcs_itrf: np.ndarray
+    pcs_enu: np.ndarray
+    cofa_distance: float
+    cofa_horizontal_distance: float
+    cofa_azimuth: float
+    cofa_elevation: float
+    antennas: List[AntennaGeometry] = field(default_factory=list)
+
+
 def _ensure_vector(x, y, z):
     """Convert CASA tool return values to a 3-element numpy array."""
     return np.array([float(np.atleast_1d(x)[0]),
@@ -86,7 +133,7 @@ def _prepare_geometry(vis, debug=False):
     pad_locs = au.getPadLOCsFromASDM(asdm)
     dict_ant_enu = au.readAntennaPositionFromASDM(asdm)
 
-    antennas = []
+    antennas: List[AntennaGeometry] = []
     for ant in antlist:
         antid = au.getAntennaIndex(vis, ant)
         pad_enu = pad_locs[ant]
@@ -112,47 +159,49 @@ def _prepare_geometry(vis, debug=False):
         else:
             az_rel = 0.0
 
-        debug_info = None
+        debug_info: Optional[AntennaDebugInfo] = None
         if debug:
             pad_itrf = au.getAntennaPadXYZ(vis, antennaId=antid)
             corr_itrf = au.computeITRFCorrection(pad_itrf, ant_offset)
             ant_itrf = pad_itrf + corr_itrf
             ant_enu_manual = _ensure_vector(*SIMUTIL.itrf2loc(*ant_itrf, *cofa))
-            debug_info = {
-                'pad_itrf': pad_itrf,
-                'ant_vector': ant_offset,
-                'corr_itrf': corr_itrf,
-                'ant_itrf': ant_itrf,
-                'ant_enu_manual': ant_enu_manual,
-            }
+            debug_info = AntennaDebugInfo(
+                pad_itrf=pad_itrf,
+                ant_vector=ant_offset,
+                corr_itrf=corr_itrf,
+                ant_itrf=ant_itrf,
+                ant_enu_manual=ant_enu_manual,
+            )
 
-        antennas.append({
-            'id': antid,
-            'name': ant,
-            'pad_enu': pad_enu,
-            'ant_enu': ant_enu,
-            'relative_to_pcs': ant_pcs,
-            'azimuth': ant_az,
-            'elevation': ant_el,
-            'distance': ant_d,
-            'horizontal_distance': ant_l,
-            'axis_angle': az_rel,
-            'debug': debug_info,
-        })
+        antennas.append(
+            AntennaGeometry(
+                id=antid,
+                name=ant,
+                pad_enu=pad_enu,
+                ant_enu=ant_enu,
+                relative_to_pcs=ant_pcs,
+                azimuth=ant_az,
+                elevation=ant_el,
+                distance=ant_d,
+                horizontal_distance=ant_l,
+                axis_angle=az_rel,
+                debug=debug_info,
+            )
+        )
 
-    return {
-        'asdm': asdm,
-        'cofa': cofa,
-        'cofa_lat': cofa_lat,
-        'cofa_long': cofa_long,
-        'pcs_itrf': pcs_itrf,
-        'pcs_enu': pcs_enu,
-        'cofa_distance': cofa_d,
-        'cofa_horizontal_distance': cofa_horizontal,
-        'cofa_azimuth': cofa_az,
-        'cofa_elevation': cofa_el,
-        'antennas': antennas,
-    }
+    return PCSGeometry(
+        asdm=asdm,
+        cofa=cofa,
+        cofa_lat=cofa_lat,
+        cofa_long=cofa_long,
+        pcs_itrf=pcs_itrf,
+        pcs_enu=pcs_enu,
+        cofa_distance=cofa_d,
+        cofa_horizontal_distance=cofa_horizontal,
+        cofa_azimuth=cofa_az,
+        cofa_elevation=cofa_el,
+        antennas=antennas,
+    )
 
 
 #------------------------------------------------------------------------------
@@ -188,24 +237,60 @@ def _configure_axis(ax, xlim, ylim, xlabel, ylabel):
     ax.grid(visible=True, linestyle='dashed')
 
 
-def _plot_antennas(ax_configs, antennas, pcs_enu):
+def _plot_antennas(ax_configs: Iterable[dict], antennas: Iterable[AntennaGeometry], pcs_enu: np.ndarray):
     """Render antenna and PCS positions across multiple axes."""
 
-    for ant in antennas:
-        x, y = ant['ant_enu'][:2]
-        for config in ax_configs:
+    configs = list(ax_configs)
+    antenna_list = list(antennas)
+
+    for ant in antenna_list:
+        x, y = ant.ant_enu[:2]
+        for config in configs:
             ax = config['ax']
             ax.plot(x, y, '.', color='r')
             if config.get('label_antennas'):
-                ax.text(x, y, ant['name'])
+                ax.text(x, y, ant.name)
 
-    for config in ax_configs:
+    for config in configs:
         ax = config['ax']
         ax.plot(pcs_enu[0], pcs_enu[1], '*', color='r', markersize=12)
         if config.get('label_pcs'):
             ax.text(pcs_enu[0], pcs_enu[1], 'PCS')
         ax.plot([pcs_enu[0], 0], [pcs_enu[1], 0], linestyle='dotted', color='b')
         _configure_axis(ax, config['xlim'], config['ylim'], config['xlabel'], config['ylabel'])
+
+
+def _print_geometry_summary(geometry: PCSGeometry):
+    """Print a textual summary of the PCS and CofA geometry."""
+
+    print("COFA (ITRF)                :", geometry.cofa)
+    print("COFA Latitude              :", geometry.cofa_lat)
+    print("COFA Longitude             :", geometry.cofa_long)
+    print("PCS position (ITRF)        :", geometry.pcs_itrf)
+    print("PCS position (ENU)         :", geometry.pcs_enu)
+    print("Az & El to CofA            : [%.3f,%.3f]" % (geometry.cofa_azimuth, geometry.cofa_elevation))
+    print("Distance to CofA (D, l)    : [%.3f,%.3f]" % (geometry.cofa_distance, geometry.cofa_horizontal_distance))
+
+
+def _print_antenna_details(antenna: AntennaGeometry, debug: bool = False):
+    """Emit human-readable information about an antenna."""
+
+    print(f"--- {antenna.name} (antennaId={antenna.id}) ---")
+    print("Pad position (ENU)         :", antenna.pad_enu)
+    print("Antenna position (ENU)     :", antenna.ant_enu)
+
+    if debug and antenna.debug:
+        info = antenna.debug
+        print("--- coordinates manually calculated")
+        print("Pad position (ITRF)        :", info.pad_itrf)
+        print("Antenna vector (ENU)       :", info.ant_vector)
+        print("ITRF correction (ITRF)     :", info.corr_itrf)
+        print("Antenna position (ITRF)    :", info.ant_itrf)
+        print("Antenna position (ENU)     :", info.ant_enu_manual)
+
+    print("Az & El to antenna         : [%.3f,%.3f]" % (antenna.azimuth, antenna.elevation))
+    print("Distance to antenna (D, l) : [%.3f,%.3f]" % (antenna.distance, antenna.horizontal_distance))
+    print("Az w/ respect to the z-axis: %.3f [deg]" % antenna.axis_angle)
 
 
 def showPCSPosition(vis, debug=False):
@@ -216,14 +301,7 @@ def showPCSPosition(vis, debug=False):
     prefix = stem.split('_')[-1]
     repdir.mkdir(parents=True, exist_ok=True)
 
-    print("COFA (ITRF)                :", geometry['cofa'])
-    print("COFA Latitude              :", geometry['cofa_lat'])
-    print("COFA Longitude             :", geometry['cofa_long'])
-
-    print("PCS position (ITRF)        :", geometry['pcs_itrf'])
-    print("PCS position (ENU)         :", geometry['pcs_enu'])
-    print("Az & El to CofA            : [%.3f,%.3f]" % (geometry['cofa_azimuth'], geometry['cofa_elevation']))
-    print("Distance to CofA (D, l)    : [%.3f,%.3f]" % (geometry['cofa_distance'], geometry['cofa_horizontal_distance']))
+    _print_geometry_summary(geometry)
 
     plt.ioff()
     fig, axs = plt.subplots(1, 2, dpi=100)
@@ -251,42 +329,27 @@ def showPCSPosition(vis, debug=False):
 
     csv_path = repdir / f"{prefix}_antenna.csv"
     header = ['AntID', 'Antenna', 'Az', 'El', 'Distance1', 'Distance2', 'Alpha']
-    list_alpha = []
+    list_alpha: List[float] = []
 
     with csv_path.open('w', newline='') as fh:
         writer = csv.writer(fh)
         writer.writerow(header)
 
-        for ant in geometry['antennas']:
-            print(f"--- {ant['name']} (antennaId={ant['id']}) ---")
-            print("Pad position (ENU)         :", ant['pad_enu'])
-            print("Antenna position (ENU)     :", ant['ant_enu'])
+        for antenna in geometry.antennas:
+            _print_antenna_details(antenna, debug=debug)
 
-            if debug and ant['debug']:
-                info = ant['debug']
-                print("--- coordinates manually calculated")
-                print("Pad position (ITRF)        :", info['pad_itrf'])
-                print("Antenna vector (ENU)       :", info['ant_vector'])
-                print("ITRF correction (ITRF)     :", info['corr_itrf'])
-                print("Antenna position (ITRF)    :", info['ant_itrf'])
-                print("Antenna position (ENU)     :", info['ant_enu_manual'])
-
-            print("Az & El to antenna         : [%.3f,%.3f]" % (ant['azimuth'], ant['elevation']))
-            print("Distance to antenna (D, l) : [%.3f,%.3f]" % (ant['distance'], ant['horizontal_distance']))
-            print("Az w/ respect to the z-axis: %.3f [deg]" % ant['axis_angle'])
-
-            list_alpha.append(ant['axis_angle'])
+            list_alpha.append(antenna.axis_angle)
             writer.writerow([
-                ant['id'],
-                ant['name'],
-                ant['azimuth'],
-                ant['elevation'],
-                ant['distance'],
-                ant['horizontal_distance'],
-                ant['axis_angle'],
+                antenna.id,
+                antenna.name,
+                antenna.azimuth,
+                antenna.elevation,
+                antenna.distance,
+                antenna.horizontal_distance,
+                antenna.axis_angle,
             ])
 
-    _plot_antennas(ax_configs, geometry['antennas'], geometry['pcs_enu'])
+    _plot_antennas(ax_configs, geometry.antennas, geometry.pcs_enu)
 
     fig.savefig(repdir / f"{prefix}_ArrayConfig.png")
     fig.clf()
@@ -294,42 +357,24 @@ def showPCSPosition(vis, debug=False):
 
     return list_alpha
 
+
 def getDirectionToAntenna(vis, debug=False):
     geometry = _prepare_geometry(vis, debug=debug)
 
-    print("COFA (ITRF)                :", geometry['cofa'])
-    print("PCS position (ITRF)        :", geometry['pcs_itrf'])
-    print("PCS position (ENU)         :", geometry['pcs_enu'])
-    print("Az & El to CofA            : [%.3f,%.3f]" % (geometry['cofa_azimuth'], geometry['cofa_elevation']))
-    print("Distance to CofA (D, l)    : [%.3f,%.3f]" % (geometry['cofa_distance'], geometry['cofa_horizontal_distance']))
+    _print_geometry_summary(geometry)
 
     list_coordinates = []
-    for ant in geometry['antennas']:
-        print(f"--- {ant['name']} (antennaId={ant['id']}) ---")
-        print("Pad position (ENU)         :", ant['pad_enu'])
-        print("Antenna position (ENU)     :", ant['ant_enu'])
-
-        if debug and ant['debug']:
-            info = ant['debug']
-            print("--- coordinates manually calculated")
-            print("Pad position (ITRF)        :", info['pad_itrf'])
-            print("Antenna vector (ENU)       :", info['ant_vector'])
-            print("ITRF correction (ITRF)     :", info['corr_itrf'])
-            print("Antenna position (ITRF)    :", info['ant_itrf'])
-            print("Antenna position (ENU)     :", info['ant_enu_manual'])
-
-        print("Az & El to antenna         : [%.3f,%.3f]" % (ant['azimuth'], ant['elevation']))
-        print("Distance to antenna (D, l) : [%.3f,%.3f]" % (ant['distance'], ant['horizontal_distance']))
-        print("Az w/ respect to the z-axis: %.3f [deg]" % ant['axis_angle'])
+    for antenna in geometry.antennas:
+        _print_antenna_details(antenna, debug=debug)
 
         list_coordinates.append([
-            ant['id'],
-            ant['name'],
-            ant['azimuth'],
-            ant['elevation'],
-            ant['distance'],
-            ant['horizontal_distance'],
-            ant['axis_angle'],
+            antenna.id,
+            antenna.name,
+            antenna.azimuth,
+            antenna.elevation,
+            antenna.distance,
+            antenna.horizontal_distance,
+            antenna.axis_angle,
         ])
 
     return list_coordinates
