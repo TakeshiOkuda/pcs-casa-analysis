@@ -5,6 +5,7 @@ PCS analysis utilities: only for personal use
 """
 import os, sys
 import csv
+from pathlib import Path
 
 import numpy as np
 from scipy.signal import savgol_filter
@@ -47,10 +48,111 @@ try:
     from casatools import msmetadata as msmdtool
     from casatools import table as tbtool
     from casatools import quanta as qa
-    from casatasks.private import simutil # for simutil.simutil().itrf2loc(x,y,z,cx,cy,cz)
+    from casatasks.private import simutil  # for simutil.simutil().itrf2loc(x,y,z,cx,cy,cz)
 except Exception as e:
     logger.error(f"Failed to import CASA modules from {path2casa}: {e}")
     sys.exit(1)
+
+
+SIMUTIL = simutil.simutil()
+PCS_GEODETIC = np.array([-67.755761, -23.069533, 5346.0 + 42.126])
+
+
+def _ensure_vector(x, y, z):
+    """Convert CASA tool return values to a 3-element numpy array."""
+    return np.array([float(np.atleast_1d(x)[0]),
+                     float(np.atleast_1d(y)[0]),
+                     float(np.atleast_1d(z)[0])])
+
+
+def _prepare_geometry(vis, debug=False):
+    """Return shared geometry information used by PCS helper functions."""
+    asdm = vis.split('.ms')[0]
+
+    cofa_x, cofa_y, cofa_z, cofa_lat, cofa_long = au.getCOFAForASDM(asdm)
+    cofa = np.array([cofa_x, cofa_y, cofa_z], dtype=float)
+
+    lon_rad = np.deg2rad(PCS_GEODETIC[0])
+    lat_rad = np.deg2rad(PCS_GEODETIC[1])
+    pcs_itrf = _ensure_vector(*SIMUTIL.long2xyz(lon_rad, lat_rad, PCS_GEODETIC[2], datum='WGS84'))
+    pcs_enu = _ensure_vector(*SIMUTIL.itrf2loc(*pcs_itrf, *cofa))
+
+    cofa_horizontal = np.linalg.norm(pcs_enu[:2])
+    cofa_d = np.linalg.norm(pcs_enu)
+    cofa_az = np.degrees(np.arctan2(pcs_enu[1], pcs_enu[0]))
+    cofa_el = np.degrees(np.arctan2(-pcs_enu[2], cofa_horizontal))
+
+    antlist = au.getAntennaNames(vis)
+    pad_locs = au.getPadLOCsFromASDM(asdm)
+    dict_ant_enu = au.readAntennaPositionFromASDM(asdm)
+
+    antennas = []
+    for ant in antlist:
+        antid = au.getAntennaIndex(vis, ant)
+        pad_enu = pad_locs[ant]
+        ant_offset = dict_ant_enu[ant]['position']
+        ant_enu = pad_enu + ant_offset
+        ant_pcs = np.array(ant_enu - pcs_enu)
+
+        ant_d = np.linalg.norm(ant_pcs)
+        ant_l = np.linalg.norm(ant_pcs[:2])
+        ant_az = np.degrees(np.arctan2(ant_pcs[1], ant_pcs[0]))
+        ant_el = np.degrees(np.arctan2(ant_pcs[2], ant_l)) if ant_l else 0.0
+
+        axis_vec = -pcs_enu
+        axis_norm = np.linalg.norm(axis_vec) * ant_d
+        if axis_norm:
+            cos_theta = np.clip(np.dot(axis_vec, ant_pcs) / axis_norm, -1.0, 1.0)
+            az_rel = np.degrees(np.arccos(cos_theta))
+            axis_xy = np.array([axis_vec[0], axis_vec[1], 0.0])
+            ant_xy = np.array([ant_pcs[0], ant_pcs[1], 0.0])
+            cross_z = np.cross(axis_xy, ant_xy)[2]
+            if cross_z < 0.0:
+                az_rel = -az_rel
+        else:
+            az_rel = 0.0
+
+        debug_info = None
+        if debug:
+            pad_itrf = au.getAntennaPadXYZ(vis, antennaId=antid)
+            corr_itrf = au.computeITRFCorrection(pad_itrf, ant_offset)
+            ant_itrf = pad_itrf + corr_itrf
+            ant_enu_manual = _ensure_vector(*SIMUTIL.itrf2loc(*ant_itrf, *cofa))
+            debug_info = {
+                'pad_itrf': pad_itrf,
+                'ant_vector': ant_offset,
+                'corr_itrf': corr_itrf,
+                'ant_itrf': ant_itrf,
+                'ant_enu_manual': ant_enu_manual,
+            }
+
+        antennas.append({
+            'id': antid,
+            'name': ant,
+            'pad_enu': pad_enu,
+            'ant_enu': ant_enu,
+            'relative_to_pcs': ant_pcs,
+            'azimuth': ant_az,
+            'elevation': ant_el,
+            'distance': ant_d,
+            'horizontal_distance': ant_l,
+            'axis_angle': az_rel,
+            'debug': debug_info,
+        })
+
+    return {
+        'asdm': asdm,
+        'cofa': cofa,
+        'cofa_lat': cofa_lat,
+        'cofa_long': cofa_long,
+        'pcs_itrf': pcs_itrf,
+        'pcs_enu': pcs_enu,
+        'cofa_distance': cofa_d,
+        'cofa_horizontal_distance': cofa_horizontal,
+        'cofa_azimuth': cofa_az,
+        'cofa_elevation': cofa_el,
+        'antennas': antennas,
+    }
 
 
 #------------------------------------------------------------------------------
@@ -76,128 +178,74 @@ Doc.#: SCID-20.02.04.00-0007-B-REP
 """
 def showPCSPosition(vis, debug=False):
 
-    repdir = 'report_'+vis.split('.')[0]
-    prefix = vis.split('_')[-1][:-3]
-    asdm = vis.split('.ms')[0]
+    geometry = _prepare_geometry(vis, debug=debug)
+    stem = Path(vis).stem
+    repdir = Path(f'report_{stem}')
+    prefix = stem.split('_')[-1]
+    repdir.mkdir(parents=True, exist_ok=True)
 
-    if (os.path.isdir(repdir) != True):
-        os.system("mkdir %s" % repdir)
+    print("COFA (ITRF)                :", geometry['cofa'])
+    print("COFA Latitude              :", geometry['cofa_lat'])
+    print("COFA Longitude             :", geometry['cofa_long'])
 
-    # COFA position
-    #CoA_local = np.array([-39.5, -702.4, 0.0])
-    #CoA_ref = CoA_local - PCS_local
-    #CoA_angle = np.degrees(np.arctan(CoA_ref[1]/CoA_ref[0]))
-    #CoA_dist = np.sqrt(CoA_ref[0]*CoA_ref[0]+CoA_ref[1]*CoA_ref[1])
-    #CoA_EL   = np.degrees(np.arctan(CoA_ref[2]/CoA_dist))
-    #print("CoA ", np.linalg.norm(CoA_local-PCS_local), CoA_dist, CoA_EL)
-
-    cofa_x, cofa_y, cofa_z, cofa_lat, cofa_long = au.getCOFAForASDM(asdm)
-    cofa = [cofa_x, cofa_y, cofa_z]
-    print("COFA (ITRF)                :", cofa)
-    print("COFA Latitude              :", cofa_lat)
-    print("COFA Longitude             :", cofa_long)
-    
-    # PCS position
-    PCS_geodetic = np.array([-67.755761, -23.069533, 5346.0+42.126])
-
-    x,y,z = simutil.simutil().long2xyz(PCS_geodetic[0]*np.pi/180.0, PCS_geodetic[1]*np.pi/180.0,PCS_geodetic[2],datum='WGS84')
-    PCS_ITRF = [x, y, z]
-    x,y,z = simutil.simutil().itrf2loc(PCS_ITRF[0],PCS_ITRF[1],PCS_ITRF[2],cofa[0],cofa[1],cofa[2])
-    PCS_ENU  = np.array([x[0], y[0], z[0]])
-
-    COFA_Az = np.rad2deg(np.arctan(PCS_ENU[1]/PCS_ENU[0]))
-    COFA_d  = np.linalg.norm(PCS_ENU)
-    COFA_l  = np.sqrt(PCS_ENU[0]*PCS_ENU[0]+PCS_ENU[1]*PCS_ENU[1])
-    COFA_El = np.rad2deg(np.arctan(-PCS_ENU[2]/COFA_l))
-
-    print("PCS position (ITRF)        :", PCS_ITRF)
-    print("PCS position (ENU)         :", PCS_ENU)
-    print("Az & El to CofA            : [%.3f,%.3f]" % (COFA_Az, COFA_El))
-    print("Distance to CofA (D, l)    : [%.3f,%.3f]" % (COFA_d, COFA_l))
-
-    antlist  = au.getAntennaNames(vis)
-    dict_AntENU = au.readAntennaPositionFromASDM(asdm)
+    print("PCS position (ITRF)        :", geometry['pcs_itrf'])
+    print("PCS position (ENU)         :", geometry['pcs_enu'])
+    print("Az & El to CofA            : [%.3f,%.3f]" % (geometry['cofa_azimuth'], geometry['cofa_elevation']))
+    print("Distance to CofA (D, l)    : [%.3f,%.3f]" % (geometry['cofa_distance'], geometry['cofa_horizontal_distance']))
 
     plt.ioff()
-    fig, axs = plt.subplots(1,2,dpi=100)
+    fig, axs = plt.subplots(1, 2, dpi=100)
 
-    fant = open('%s/%s_antenna.csv' %(repdir, prefix), 'w')
-    header = ['AntID', 'Antenna', 'Az', 'El', 'Distance1','Distance2', 'Alpha']
-    fant_wrt = csv.writer(fant)
-    fant_wrt.writerow(header)
-
+    csv_path = repdir / f"{prefix}_antenna.csv"
+    header = ['AntID', 'Antenna', 'Az', 'El', 'Distance1', 'Distance2', 'Alpha']
     list_alpha = []
 
-    for ant in antlist:
+    with csv_path.open('w', newline='') as fh:
+        writer = csv.writer(fh)
+        writer.writerow(header)
 
-        antid  = au.getAntennaIndex(vis,ant)
+        for ant in geometry['antennas']:
+            print(f"--- {ant['name']} (antennaId={ant['id']}) ---")
+            print("Pad position (ENU)         :", ant['pad_enu'])
+            print("Antenna position (ENU)     :", ant['ant_enu'])
 
-        # Method #1
-        Pad_ENU        = au.getPadLOCsFromASDM(asdm)[ant]
-        Ant_ENU_offset = dict_AntENU[ant]['position']
-        Ant_ENU        = Pad_ENU + Ant_ENU_offset
-        print("--- %s (antennaId=%d) ---" % (ant,antid))
-        print("Pad position (ENU)         :", Pad_ENU)
-        print("Antenna position (ENU)     :", Ant_ENU)
+            if debug and ant['debug']:
+                info = ant['debug']
+                print("--- coordinates manually calculated")
+                print("Pad position (ITRF)        :", info['pad_itrf'])
+                print("Antenna vector (ENU)       :", info['ant_vector'])
+                print("ITRF correction (ITRF)     :", info['corr_itrf'])
+                print("Antenna position (ITRF)    :", info['ant_itrf'])
+                print("Antenna position (ENU)     :", info['ant_enu_manual'])
 
-        # Method #2
-        if(debug):
-            # Pad position in ITRF
-            Pad_ITRF  = au.getAntennaPadXYZ(vis,antennaId=antid)
-            Corr_ITRF = au.computeITRFCorrection(Pad_ITRF, Ant_ENU_offset)
-            # ITRF correction
-            Ant_ITRF = Pad_ITRF + Corr_ITRF
-            # ITRF XYZ to ALMA ENU
-            x,y,z = simutil.simutil().itrf2loc(Ant_ITRF[0],Ant_ITRF[1],Ant_ITRF[2],cofa[0],cofa[1],cofa[2])
-            Ant_ENU2 = [x[0], y[0], z[0]]
-            print("--- coordinates manually calculated")
-            print("Pad position (ITRF)        :", Pad_ITRF)
-            print("Antenna vector (ENU)       :", Ant_ENU_offset)
-            print("ITRF correction (ITRF)     :", Corr_ITRF)
-            print("Antenna position (ITRF)    :", Ant_ITRF)
-            print("Antenna position (ENU)     :", Ant_ENU2)
+            print("Az & El to antenna         : [%.3f,%.3f]" % (ant['azimuth'], ant['elevation']))
+            print("Distance to antenna (D, l) : [%.3f,%.3f]" % (ant['distance'], ant['horizontal_distance']))
+            print("Az w/ respect to the z-axis: %.3f [deg]" % ant['axis_angle'])
 
-        # Antenna position with respect to the PCS
-        Ant_pcs = np.array(Ant_ENU - PCS_ENU)
+            list_alpha.append(ant['axis_angle'])
+            writer.writerow([
+                ant['id'],
+                ant['name'],
+                ant['azimuth'],
+                ant['elevation'],
+                ant['distance'],
+                ant['horizontal_distance'],
+                ant['axis_angle'],
+            ])
 
-        Ant_Az = np.rad2deg(np.arctan(Ant_pcs[1]/Ant_pcs[0]))
-        Ant_d  = np.linalg.norm(Ant_pcs)
-        Ant_l  = np.sqrt(Ant_pcs[0]*Ant_pcs[0]+Ant_pcs[1]*Ant_pcs[1])
-        Ant_El = np.rad2deg(np.arctan(Ant_pcs[2]/Ant_l))
-        
-        print("Az & El to antenna         : [%.3f,%.3f]" % (Ant_Az, Ant_El))
-        print("Distance to antenna (D, l) : [%.3f,%.3f]" % (Ant_d, Ant_l))
+            axs[0].plot(ant['ant_enu'][0], ant['ant_enu'][1], '.', color='r')
+            axs[1].plot(ant['ant_enu'][0], ant['ant_enu'][1], '.', color='r')
+            axs[1].text(ant['ant_enu'][0], ant['ant_enu'][1], ant['name'])
 
-        # Check azimuth angle with respect to PCS optical axis
-        az = np.rad2deg(np.arccos(np.dot(-PCS_ENU, Ant_pcs)/(COFA_d*Ant_d)))
-        #
-        PCS_temp = [-PCS_ENU[0], -PCS_ENU[1], 0.0] # z-axis from PCS to CofA
-        Ant_temp = [Ant_pcs[0], Ant_pcs[1], 0.0]
-        w = np.cross(PCS_temp, Ant_temp)
-        az_sign = np.arcsin(w[2]/np.linalg.norm(PCS_temp)/np.linalg.norm(Ant_pcs))
-        if az_sign<0.0: az = -az
+    pcs_enu = geometry['pcs_enu']
+    axs[0].plot(pcs_enu[0], pcs_enu[1], '*', color='r', markersize=12)
+    axs[0].text(pcs_enu[0], pcs_enu[1], 'PCS')
 
-        print("Az w/ respect to the z-axis: %.3f [deg]" % az)
-        list_alpha.append(az)
+    axs[0].plot([pcs_enu[0], 0], [pcs_enu[1], 0], linestyle='dotted', color='b')
+    axs[1].plot([pcs_enu[0], 0], [pcs_enu[1], 0], linestyle='dotted', color='b')
 
-        fant_wrt.writerow([antid,ant,Ant_Az,Ant_El,Ant_d,Ant_l,az])
-
-        axs[0].plot(Ant_ENU[0],Ant_ENU[1],'.', color='r')
-        axs[1].plot(Ant_ENU[0],Ant_ENU[1],'.', color='r')
-        axs[1].text(Ant_ENU[0],Ant_ENU[1],ant)
-
-    fant.close()
-
-    # PCS
-    axs[0].plot(PCS_ENU[0],PCS_ENU[1],'*', color='r',markersize=12)
-    axs[0].text(PCS_ENU[0],PCS_ENU[1],'PCS')
-
-    # PCS LoS
-    axs[0].plot([PCS_ENU[0],0],[PCS_ENU[1],0], linestyle='dotted', color='b')
-    axs[1].plot([PCS_ENU[0],0],[PCS_ENU[1],0], linestyle='dotted', color='b')
-
-    axs[0].set_xlim(-1000,1000)
-    axs[0].set_ylim(-6000,0)
+    axs[0].set_xlim(-1000, 1000)
+    axs[0].set_ylim(-6000, 0)
     axs[0].set_aspect('equal')
     axs[0].set_xlabel("X [m]")
     axs[0].set_ylabel("Y [m]")
@@ -211,105 +259,50 @@ def showPCSPosition(vis, debug=False):
     axs[1].set_ylabel("Y [m]")
     axs[1].tick_params(axis='both', which='major')
     axs[1].grid(visible=True, linestyle='dashed')
-    
-    fig.savefig('%s/%s_ArrayConfig.png' % (repdir,prefix))
+
+    fig.savefig(repdir / f"{prefix}_ArrayConfig.png")
     fig.clf()
     plt.close()
 
     return list_alpha
 
-def getDirectionToAntenna(vis,debug=False):
-    asdm = vis.split('.ms')[0]
+def getDirectionToAntenna(vis, debug=False):
+    geometry = _prepare_geometry(vis, debug=debug)
 
-    # COFA position
-    #CoA_local = np.array([-39.5, -702.4, 0.0])
-    #CoA_ref = CoA_local - PCS_local
-    #CoA_angle = np.degrees(np.arctan(CoA_ref[1]/CoA_ref[0]))
-    #CoA_dist = np.sqrt(CoA_ref[0]*CoA_ref[0]+CoA_ref[1]*CoA_ref[1])
-    #CoA_EL   = np.degrees(np.arctan(CoA_ref[2]/CoA_dist))
-    #print("CoA ", np.linalg.norm(CoA_local-PCS_local), CoA_dist, CoA_EL)
-
-    cofa_x, cofa_y, cofa_z, cofa_lat, cofa_long = au.getCOFAForASDM(asdm)
-    cofa = [cofa_x, cofa_y, cofa_z]
-    print("COFA (ITRF)                :", cofa)
-    
-    # PCS position
-    PCS_geodetic = np.array([-67.755761, -23.069533, 5346.0+42.126])
-
-    x,y,z = simutil.simutil().long2xyz(PCS_geodetic[0]*np.pi/180.0, PCS_geodetic[1]*np.pi/180.0,PCS_geodetic[2],datum='WGS84')
-    PCS_ITRF = [x, y, z]
-    x,y,z = simutil.simutil().itrf2loc(PCS_ITRF[0],PCS_ITRF[1],PCS_ITRF[2],cofa[0],cofa[1],cofa[2])
-    PCS_ENU  = np.array([x[0], y[0], z[0]])
-
-    COFA_Az = np.rad2deg(np.arctan(PCS_ENU[1]/PCS_ENU[0]))
-    COFA_d  = np.linalg.norm(PCS_ENU)
-    COFA_l  = np.sqrt(PCS_ENU[0]*PCS_ENU[0]+PCS_ENU[1]*PCS_ENU[1])
-    COFA_El = np.rad2deg(np.arctan(-PCS_ENU[2]/COFA_l))
-
-    print("PCS position (ITRF)        :", PCS_ITRF)
-    print("PCS position (ENU)         :", PCS_ENU)
-    print("Az & El to CofA            : [%.3f,%.3f]" % (COFA_Az, COFA_El))
-    print("Distance to CofA (D, l)    : [%.3f,%.3f]" % (COFA_d, COFA_l))
-
-    antlist  = au.getAntennaNames(vis)
-    dict_AntENU = au.readAntennaPositionFromASDM(asdm)
-
-    #header = ['AntID', 'Antenna', 'Az', 'El', 'Distance1','Distance2', 'Alpha']
+    print("COFA (ITRF)                :", geometry['cofa'])
+    print("PCS position (ITRF)        :", geometry['pcs_itrf'])
+    print("PCS position (ENU)         :", geometry['pcs_enu'])
+    print("Az & El to CofA            : [%.3f,%.3f]" % (geometry['cofa_azimuth'], geometry['cofa_elevation']))
+    print("Distance to CofA (D, l)    : [%.3f,%.3f]" % (geometry['cofa_distance'], geometry['cofa_horizontal_distance']))
 
     list_coordinates = []
+    for ant in geometry['antennas']:
+        print(f"--- {ant['name']} (antennaId={ant['id']}) ---")
+        print("Pad position (ENU)         :", ant['pad_enu'])
+        print("Antenna position (ENU)     :", ant['ant_enu'])
 
-    for ant in antlist:
-
-        antid  = au.getAntennaIndex(vis,ant)
-
-        # Method #1
-        Pad_ENU        = au.getPadLOCsFromASDM(asdm)[ant]
-        Ant_ENU_offset = dict_AntENU[ant]['position']
-        Ant_ENU        = Pad_ENU + Ant_ENU_offset
-        print("--- %s (antennaId=%d) ---" % (ant,antid))
-        print("Pad position (ENU)         :", Pad_ENU)
-        print("Antenna position (ENU)     :", Ant_ENU)
-
-        # Method #2
-        if(debug):
-            # Pad position in ITRF
-            Pad_ITRF  = au.getAntennaPadXYZ(vis,antennaId=antid)
-            Corr_ITRF = au.computeITRFCorrection(Pad_ITRF, Ant_ENU_offset)
-            # ITRF correction
-            Ant_ITRF = Pad_ITRF + Corr_ITRF
-            # ITRF XYZ to ALMA ENU
-            x,y,z = simutil.simutil().itrf2loc(Ant_ITRF[0],Ant_ITRF[1],Ant_ITRF[2],cofa[0],cofa[1],cofa[2])
-            Ant_ENU2 = [x[0], y[0], z[0]]
+        if debug and ant['debug']:
+            info = ant['debug']
             print("--- coordinates manually calculated")
-            print("Pad position (ITRF)        :", Pad_ITRF)
-            print("Antenna vector (ENU)       :", Ant_ENU_offset)
-            print("ITRF correction (ITRF)     :", Corr_ITRF)
-            print("Antenna position (ITRF)    :", Ant_ITRF)
-            print("Antenna position (ENU)     :", Ant_ENU2)
+            print("Pad position (ITRF)        :", info['pad_itrf'])
+            print("Antenna vector (ENU)       :", info['ant_vector'])
+            print("ITRF correction (ITRF)     :", info['corr_itrf'])
+            print("Antenna position (ITRF)    :", info['ant_itrf'])
+            print("Antenna position (ENU)     :", info['ant_enu_manual'])
 
-        # Antenna position with respect to the PCS
-        Ant_pcs = np.array(Ant_ENU - PCS_ENU)
+        print("Az & El to antenna         : [%.3f,%.3f]" % (ant['azimuth'], ant['elevation']))
+        print("Distance to antenna (D, l) : [%.3f,%.3f]" % (ant['distance'], ant['horizontal_distance']))
+        print("Az w/ respect to the z-axis: %.3f [deg]" % ant['axis_angle'])
 
-        Ant_Az = np.rad2deg(np.arctan(Ant_pcs[1]/Ant_pcs[0]))
-        Ant_d  = np.linalg.norm(Ant_pcs)
-        Ant_l  = np.sqrt(Ant_pcs[0]*Ant_pcs[0]+Ant_pcs[1]*Ant_pcs[1])
-        Ant_El = np.rad2deg(np.arctan(Ant_pcs[2]/Ant_l))
-        
-        print("Az & El to antenna         : [%.3f,%.3f]" % (Ant_Az, Ant_El))
-        print("Distance to antenna (D, l) : [%.3f,%.3f]" % (Ant_d, Ant_l))
-
-        # Check azimuth angle with respect to PCS optical axis
-        az = np.rad2deg(np.arccos(np.dot(-PCS_ENU, Ant_pcs)/(COFA_d*Ant_d)))
-        #
-        PCS_temp = [-PCS_ENU[0], -PCS_ENU[1], 0.0] # z-axis from PCS to CofA
-        Ant_temp = [Ant_pcs[0], Ant_pcs[1], 0.0]
-        w = np.cross(PCS_temp, Ant_temp)
-        az_sign = np.arcsin(w[2]/np.linalg.norm(PCS_temp)/np.linalg.norm(Ant_pcs))
-        if az_sign<0.0: az = -az
-
-        print("Az w/ respect to the z-axis: %.3f [deg]" % az)
-
-        list_coordinates.append([antid,ant,Ant_Az,Ant_El,Ant_d,Ant_l,az])
+        list_coordinates.append([
+            ant['id'],
+            ant['name'],
+            ant['azimuth'],
+            ant['elevation'],
+            ant['distance'],
+            ant['horizontal_distance'],
+            ant['axis_angle'],
+        ])
 
     return list_coordinates
 
