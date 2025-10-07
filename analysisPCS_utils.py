@@ -263,34 +263,46 @@ def _plot_antennas(ax_configs: Iterable[dict], antennas: Iterable[AntennaGeometr
 def _print_geometry_summary(geometry: PCSGeometry):
     """Print a textual summary of the PCS and CofA geometry."""
 
-    print("COFA (ITRF)                :", geometry.cofa)
-    print("COFA Latitude              :", geometry.cofa_lat)
-    print("COFA Longitude             :", geometry.cofa_long)
-    print("PCS position (ITRF)        :", geometry.pcs_itrf)
-    print("PCS position (ENU)         :", geometry.pcs_enu)
-    print("Az & El to CofA            : [%.3f,%.3f]" % (geometry.cofa_azimuth, geometry.cofa_elevation))
-    print("Distance to CofA (D, l)    : [%.3f,%.3f]" % (geometry.cofa_distance, geometry.cofa_horizontal_distance))
+    logger.info("COFA (ITRF)                : %s", geometry.cofa)
+    logger.info("COFA Latitude              : %s", geometry.cofa_lat)
+    logger.info("COFA Longitude             : %s", geometry.cofa_long)
+    logger.info("PCS position (ITRF)        : %s", geometry.pcs_itrf)
+    logger.info("PCS position (ENU)         : %s", geometry.pcs_enu)
+    logger.info(
+        "Az & El to CofA            : [%.3f,%.3f]",
+        geometry.cofa_azimuth,
+        geometry.cofa_elevation,
+    )
+    logger.info(
+        "Distance to CofA (D, l)    : [%.3f,%.3f]",
+        geometry.cofa_distance,
+        geometry.cofa_horizontal_distance,
+    )
 
 
 def _print_antenna_details(antenna: AntennaGeometry, debug: bool = False):
     """Emit human-readable information about an antenna."""
 
-    print(f"--- {antenna.name} (antennaId={antenna.id}) ---")
-    print("Pad position (ENU)         :", antenna.pad_enu)
-    print("Antenna position (ENU)     :", antenna.ant_enu)
+    logger.info("--- %s (antennaId=%s) ---", antenna.name, antenna.id)
+    logger.info("Pad position (ENU)         : %s", antenna.pad_enu)
+    logger.info("Antenna position (ENU)     : %s", antenna.ant_enu)
 
     if debug and antenna.debug:
         info = antenna.debug
-        print("--- coordinates manually calculated")
-        print("Pad position (ITRF)        :", info.pad_itrf)
-        print("Antenna vector (ENU)       :", info.ant_vector)
-        print("ITRF correction (ITRF)     :", info.corr_itrf)
-        print("Antenna position (ITRF)    :", info.ant_itrf)
-        print("Antenna position (ENU)     :", info.ant_enu_manual)
+        logger.debug("--- coordinates manually calculated")
+        logger.debug("Pad position (ITRF)        : %s", info.pad_itrf)
+        logger.debug("Antenna vector (ENU)       : %s", info.ant_vector)
+        logger.debug("ITRF correction (ITRF)     : %s", info.corr_itrf)
+        logger.debug("Antenna position (ITRF)    : %s", info.ant_itrf)
+        logger.debug("Antenna position (ENU)     : %s", info.ant_enu_manual)
 
-    print("Az & El to antenna         : [%.3f,%.3f]" % (antenna.azimuth, antenna.elevation))
-    print("Distance to antenna (D, l) : [%.3f,%.3f]" % (antenna.distance, antenna.horizontal_distance))
-    print("Az w/ respect to the z-axis: %.3f [deg]" % antenna.axis_angle)
+    logger.info("Az & El to antenna         : [%.3f,%.3f]", antenna.azimuth, antenna.elevation)
+    logger.info(
+        "Distance to antenna (D, l) : [%.3f,%.3f]",
+        antenna.distance,
+        antenna.horizontal_distance,
+    )
+    logger.info("Az w/ respect to the z-axis: %.3f [deg]", antenna.axis_angle)
 
 
 def showPCSPosition(vis, debug=False):
@@ -468,7 +480,7 @@ def checkShadowingPCS():
         diameter_limits = 0.5 * (diam0 + diameters)
         mask = (distances <= dist0) & (np.arange(len(ants)) != idx)
         if not np.any(baselines[mask] < diameter_limits[mask]):
-            print(ant, pad, " no blocking")
+            logger.info("%s %s no blocking", ant, pad)
 
     return
 
@@ -785,7 +797,7 @@ def checkSqldRotation(vis, polarizer_file=None, Xpol=False, interactive=False):
         
         ant = antlist[antidx]
         antid = au.getAntennaIndex(vis,ant)
-        print("Antenna: %s [%d/%d]" % (ant, antidx+1, nant))
+        logger.info("Antenna: %s [%d/%d]", ant, antidx + 1, nant)
 
         #plt.ioff()
         figTS, axsTS = plt.subplots(4, 2, figsize=[8.27,11.69],dpi=200)
@@ -798,7 +810,7 @@ def checkSqldRotation(vis, polarizer_file=None, Xpol=False, interactive=False):
             spw  = SpwsSQLD[spwidx]
             ddid = au.getDataDescriptionId(vis, spw)
 
-            print("SPW    : %d [%d/%d]" % (spw, spwidx+1, nspw))
+            logger.info("SPW    : %d [%d/%d]", spw, spwidx + 1, nspw)
 
             freq = getFrequenciesGHz(vis, spw)
             if    84.0 <= freq[0] < 116: band='3'
@@ -909,7 +921,7 @@ def doPCSAnalysisForSQLD(vis, polarizer_file=None, list_az=None, Xpol=False):
     for antidx, ant in enumerate(antlist):
 
         antid = au.getAntennaIndex(vis, ant)
-        print("Antenna: %s [%d/%d]" % (ant, antidx+1, nant))
+        logger.info("Antenna: %s [%d/%d]", ant, antidx + 1, nant)
 
         plt.ioff()
         figTS, axsTS = plt.subplots(4, 2, figsize=[8.27, 11.69], dpi=200)
@@ -933,7 +945,7 @@ def doPCSAnalysisForSQLD(vis, polarizer_file=None, list_az=None, Xpol=False):
 
             ddid = au.getDataDescriptionId(vis, spw)
 
-            print("SPW    : %d [%d/%d]" % (spw, spwidx+1, nspw))
+            logger.info("SPW    : %d [%d/%d]", spw, spwidx + 1, nspw)
 
             freq = getFrequenciesGHz(vis, spw)
             if 84.0 <= freq[0] < 116:
@@ -1097,7 +1109,19 @@ def doPCSAnalysisForSQLD(vis, polarizer_file=None, list_az=None, Xpol=False):
                     if ffit is not None:
                         fit_wrt.writerow([ant, spw, pol, phi_WG2, phi_WG2_err, theta_RX, theta_RX_err, P0, P0_err, Poffset, Poffset_err])
 
-                    print(ant, spw, pol, phi_WG2, theta_RX, theta_WG1, phi_WG1, alpha, P0, Poffset)
+                    logger.info(
+                        "%s %s %s %s %s %s %s %s %s %s",
+                        ant,
+                        spw,
+                        pol,
+                        phi_WG2,
+                        theta_RX,
+                        theta_WG1,
+                        phi_WG1,
+                        alpha,
+                        P0,
+                        Poffset,
+                    )
 
                     if pol == 0:
                         title = "%s %s Pol-X" % (prefix, ant)
@@ -1231,7 +1255,7 @@ def getCWSignal2(spec):
     elif np.abs(Ch_diffmax-Ch_diffmin)==1:
         cwCh_ave = np.array([Ch_diffmax, Ch_diffmin])
     else:
-        print("debug : spike CH error", Ch_diffmax, Ch_diffmin )
+        logger.debug("debug : spike CH error %s %s", Ch_diffmax, Ch_diffmin)
 
     # Baseline substraction
     cwCh_min = np.min(cwCh_ave)
@@ -1316,7 +1340,7 @@ def getCWSignal(spec):
     elif np.abs(Ch_diffmax-Ch_diffmin)==1:
         cwCh_ave = np.array([Ch_diffmax, Ch_diffmin])
     else:
-        print("debug : spike CH error", Ch_diffmax, Ch_diffmin )
+        logger.debug("debug : spike CH error %s %s", Ch_diffmax, Ch_diffmin)
 
     # Vector average of correlation
     cw_corr = spec[:, :, cwCh_ave].sum(axis=2)
@@ -1493,7 +1517,7 @@ def doPCSAnalysisForACFR(vis, polarizer_file=None, Xpol=False):
 
         ant = antlist[antidx]
         antid = au.getAntennaIndex(vis,ant)
-        print("Antenna: %s [%d/%d]" % (ant, antidx+1, nant))
+        logger.info("Antenna: %s [%d/%d]", ant, antidx + 1, nant)
 
         figTS, axsTS = plt.subplots(4,2,figsize=[8.27, 11.69],dpi=200)
         figGS, axsGS = plt.subplots(4,2,figsize=[8.27, 11.69],dpi=200)
@@ -1521,7 +1545,7 @@ def doPCSAnalysisForACFR(vis, polarizer_file=None, Xpol=False):
             spw  = SpwsFR[spwidx]
             ddid = au.getDataDescriptionId(vis, spw)
 
-            print("SPW    : %d [%d/%d]" % (spw, spwidx+1, nspw))
+            logger.info("SPW    : %d [%d/%d]", spw, spwidx + 1, nspw)
 
             freq = getFrequenciesGHz(vis, spw)
             if    84.0 <= freq[0] < 116: band='3'
@@ -1681,8 +1705,8 @@ def doPCSAnalysisForACFR(vis, polarizer_file=None, Xpol=False):
 
                 dtime = T[1] - T[0]
                 freqCW = np.average([freq[i] for i in cwChXX])
-                print("debug: dtime = %.3f" % dtime)
-                print("debug: CW freq = %.3e" % freqCW)
+                logger.debug("debug: dtime = %.3f", dtime)
+                logger.debug("debug: CW freq = %.3e", freqCW)
                 Tk, yk = [], []
                 for k in range(len(cwXYphase)-1):
                     Tk.append(T[k])
@@ -2031,7 +2055,7 @@ def doPCSAnalysisForACCA(vis, polarizer_file=None, Xpol=False):
         
         ant = antlist[antidx]
         antid = au.getAntennaIndex(vis,ant)
-        print("Antenna: %s [%d/%d]" % (ant, antidx+1, nant))
+        logger.info("Antenna: %s [%d/%d]", ant, antidx + 1, nant)
 
         plt.ioff()
         figTS, axsTS = plt.subplots(4, 2, figsize=[8.27,11.69],dpi=200)
@@ -2051,7 +2075,7 @@ def doPCSAnalysisForACCA(vis, polarizer_file=None, Xpol=False):
             spw  = SpwsCA[spwidx]
             ddid = au.getDataDescriptionId(vis, spw)
 
-            print("SPW    : %d [%d/%d]" % (spw, spwidx+1, nspw))
+            logger.info("SPW    : %d [%d/%d]", spw, spwidx + 1, nspw)
 
             freq = getFrequenciesGHz(vis, spw)
             if    84.0 <= freq[0] < 116: band='3'
@@ -2062,7 +2086,7 @@ def doPCSAnalysisForACCA(vis, polarizer_file=None, Xpol=False):
             npol  = len(data)
             nch   = len(data[0])
             ndump = len(data[0][0])
-            print("npol, nch, ndump:", npol, nch, ndump)
+            logger.debug("npol, nch, ndump: %s %s %s", npol, nch, ndump)
 
             T = []
             for ii in range(ndump):
@@ -2339,7 +2363,7 @@ def measurePolarizedAngle(p_angle, polRX_x, Vxx, Vyy):
         elif ii>=p1_idx:
             angle_amp[ii] = 180.0 - angle_amp[ii]
 
-    print(ref_idx, p0_idx, p1_idx)
+    logger.debug("%s %s %s", ref_idx, p0_idx, p1_idx)
     # align to the PCS system coordinate
     angle_amp = angle_amp + polRX_x
 
@@ -2376,7 +2400,7 @@ def doPCSAnalysisForXpol(vis, polarizer_file=None):
 
         ant = antlist[antidx]
         antid = au.getAntennaIndex(vis,ant)
-        print("Antenna: %s [%d/%d]" % (ant, antidx+1, nant))
+        logger.info("Antenna: %s [%d/%d]", ant, antidx + 1, nant)
 
         figPol, axsPol = plt.subplots(2,1,figsize=[8.27, 11.69],dpi=200)
         figPol.subplots_adjust(left=0.10,right=0.95,bottom=0.05,top=0.95,hspace=0.3,wspace=0.3)
@@ -2395,7 +2419,7 @@ def doPCSAnalysisForXpol(vis, polarizer_file=None):
             spw  = SpwsFR[spwidx]
             ddid = au.getDataDescriptionId(vis, spw)
 
-            print("SPW    : %d [%d/%d]" % (spw, spwidx+1, nspw))
+            logger.info("SPW    : %d [%d/%d]", spw, spwidx + 1, nspw)
 
             freq = getFrequenciesGHz(vis, spw)
             if    84.0 <= freq[0] < 116: band='3'
@@ -2770,7 +2794,7 @@ def plotPCSBeamMap(vis):
 
         if idx_peak_XX[0]==idx_peak_YY[0]:
             CHpeak = idx_peak_XX[0]
-            print("peak channel = %d" % CHpeak)
+            logger.info("peak channel = %d", CHpeak)
             CHsignal = [CHpeak-2, CHpeak-1, CHpeak, CHpeak+1, CHpeak+2]
 
         # calculate total power
@@ -2807,16 +2831,24 @@ def plotPCSBeamMap(vis):
         xmax = np.max(x)
         xmin = np.min(x)
         dx = [np.absolute(coord_ac[i][j+1][0]-coord_ac[i][j][0]) for j in range(len(coord_ac[0])-1) for i in range(len(coord_ac))]
-        print("Debug: x spacing %f (~%.3f m) " % (np.average(dx), 4.1e3*np.sin(np.deg2rad(np.average(dx)))))
-        print("Debug: xmax, xmin = (%f, %f) " % (xmin*3600, xmax*3600) )
+        logger.debug(
+            "Debug: x spacing %f (~%.3f m) ",
+            np.average(dx),
+            4.1e3 * np.sin(np.deg2rad(np.average(dx))),
+        )
+        logger.debug("Debug: xmax, xmin = (%f, %f) ", xmin * 3600, xmax * 3600)
 
         coord_average = np.average(coord_ac, axis=1)
         y = [ coord_average[i] for i in range(len(coord_average))]
         ymax = np.max(y)
         ymin = np.min(y) 
         dy = [np.absolute(coord_average[i+1][1]-coord_average[i][1]) for i in range(len(coord_average)-1)]
-        print("Debug: y spacing %f (~%.3f m)" % (np.average(dy), 4.1e3*np.sin(np.deg2rad(np.average(dy)))))
-        print("Debug: ymax, ymin = (%f, %f) " % (ymin*3600, ymax*3600) )
+        logger.debug(
+            "Debug: y spacing %f (~%.3f m)",
+            np.average(dy),
+            4.1e3 * np.sin(np.deg2rad(np.average(dy))),
+        )
+        logger.debug("Debug: ymax, ymin = (%f, %f) ", ymin * 3600, ymax * 3600)
 
         extent_imshow_ac  = (xmin*3600.0,xmax*3600.0,ymin*3600.0,ymax*3600.0)
         extent_contour_ac = (xmin*3600.0,xmax*3600.0,ymax*3600.0,ymin*3600.0)
@@ -2837,13 +2869,13 @@ def plotPCSBeamMap(vis):
             freq = getFrequenciesGHz(vis, spw)
 
             # read auto-correlation data
-            print("Debug: Antid=%d, SPW=%d, DD=%d" % (antid,spw,ddid))
+            logger.debug("Debug: Antid=%d, SPW=%d, DD=%d", antid, spw, ddid)
             time,data,fdata,state = getSpectralAutoData_hack(vis,antid,ddid,scan)
 
             # baseline substraction & signal power
             SignalXX, SignalYY= [], []
             raw = np.array(data).transpose((0,2,1))
-            print("Debug: ", len(raw), len(raw[0]), len(raw[0][0]))
+            logger.debug("Debug: %s %s %s", len(raw), len(raw[0]), len(raw[0][0]))
             for dump in range(len(raw[0])):
                 Chfit, XXfit, YYfit = [], [], []
                 rawXX = np.absolute(raw[0][dump])
@@ -2866,7 +2898,7 @@ def plotPCSBeamMap(vis):
             
             # calclulate total power
             data = np.sum(data, axis=1)
-            print("Debug: ", len(data[0]), len(SignalXX), len(SignalYY))
+            logger.debug("Debug: %s %s %s", len(data[0]), len(SignalXX), len(SignalYY))
 
             intensity_XX, intensity_YY = [], []
             intensity_signal_XX, intensity_signal_YY = [], []
@@ -2895,12 +2927,12 @@ def plotPCSBeamMap(vis):
                 if not np.isnan(img).any():
                     x, y = np.meshgrid(np.linspace(0,img.shape[1],img.shape[1]),np.linspace(0,img.shape[0],img.shape[0]))
                     initial = (np.max(img), img.shape[1]/2.0,img.shape[0]/2.0,2,2)
-                    print("Debug: initial ", initial)
+                    logger.debug("Debug: initial %s", initial)
                     img_ravel = img.ravel()
                     popt,pcov=curve_fit(gaussian_2d,(x,y),img_ravel,initial)
-                    print("Debug: fitting ", popt)
+                    logger.debug("Debug: fitting %s", popt)
                 else:
-                    print("Skipped 2D gaussian fitting")
+                    logger.info("Skipped 2D gaussian fitting")
 
             for i in range(2):
                 axs[i][spwidx].imshow(intensity[i], extent=extent_imshow_ac, aspect='equal')
@@ -2971,16 +3003,24 @@ def plotPCSBeamMap(vis):
         xmax = np.max(x)
         xmin = np.min(x)
         dx = [np.absolute(coord_tp[i][j+1][0]-coord_tp[i][j][0]) for j in range(len(coord_tp[0])-1) for i in range(len(coord_tp))]
-        print("Debug: x spacing %f (~%.3f m) " % (np.average(dx), 4.1e3*np.sin(np.deg2rad(np.average(dx)))))
-        print("Debug: xmax, xmin = (%f, %f) " % (xmin*3600, xmax*3600) )
+        logger.debug(
+            "Debug: x spacing %f (~%.3f m) ",
+            np.average(dx),
+            4.1e3 * np.sin(np.deg2rad(np.average(dx))),
+        )
+        logger.debug("Debug: xmax, xmin = (%f, %f) ", xmin * 3600, xmax * 3600)
 
         coord_average = np.average(coord_tp, axis=1)
         y = [ coord_average[i] for i in range(len(coord_average))]
         ymax = np.max(y)
         ymin = np.min(y) 
         dy = [np.absolute(coord_average[i+1][1]-coord_average[i][1]) for i in range(len(coord_average)-1)]
-        print("Debug: y spacing %f (~%.3f m)" % (np.average(dy), 4.1e3*np.sin(np.deg2rad(np.average(dy)))))
-        print("Debug: ymax, ymin = (%f, %f) " % (ymin*3600, ymax*3600) )
+        logger.debug(
+            "Debug: y spacing %f (~%.3f m)",
+            np.average(dy),
+            4.1e3 * np.sin(np.deg2rad(np.average(dy))),
+        )
+        logger.debug("Debug: ymax, ymin = (%f, %f) ", ymin * 3600, ymax * 3600)
 
         extent_imshow_tp  = (xmin*3600.0,xmax*3600.0,ymin*3600.0,ymax*3600.0)
         extent_contour_tp = (xmin*3600.0,xmax*3600.0,ymax*3600.0,ymin*3600.0)
@@ -2997,7 +3037,7 @@ def plotPCSBeamMap(vis):
             freq = getFrequenciesGHz(vis, spw)
 
             # read auto-correlation data
-            print("Debug: Antid=%d, SPW=%d, DD=%d" % (antid,spw,ddid))
+            logger.debug("Debug: Antid=%d, SPW=%d, DD=%d", antid, spw, ddid)
             time,data,fdata,state = getSpectralAutoData_hack(vis,antid,ddid,scan)
 
             intensity_XX, intensity_YY = [], []
@@ -3060,7 +3100,7 @@ def doPCSAnalysisForBroadbandNoise(vis, sch, ech, polarizer_file=None):
     cclist = list(itertools.combinations(antidlist,2))
 
     list_coordinates = getDirectionToAntenna(vis,debug=True)
-    print("Debug: ", list_coordinates)
+    logger.debug("Debug: %s", list_coordinates)
 
     for spwidx in range(nspw):
 
@@ -3071,7 +3111,7 @@ def doPCSAnalysisForBroadbandNoise(vis, sch, ech, polarizer_file=None):
         elif 211.0 <= freq[0] < 275: band='6'
         elif 275.0 <= freq[0] < 373: band='7'
 
-        print("SPW    : %d [%d/%d]" % (spw, spwidx+1, nspw))
+        logger.info("SPW    : %d [%d/%d]", spw, spwidx + 1, nspw)
 
         time0,data0,fdata0,state0 = getSpectralAutoData_hack(vis,0,ddid,scan)
         data0 = np.array(data0).transpose((0,2,1))
@@ -3157,16 +3197,21 @@ def doPCSAnalysisForBroadbandNoise(vis, sch, ech, polarizer_file=None):
                 pol_phs.append(tmp_phs)
             CC_pol.append([pol_amp, pol_phs])
 
-        print("Debug: ", len(AC_pol), len(AC_pol[0]))
-        print("Debug: ", len(CC_pol), len(CC_pol[0]), len(CC_pol[0][0]))
+        logger.debug("Debug: %s %s", len(AC_pol), len(AC_pol[0]))
+        logger.debug(
+            "Debug: %s %s %s",
+            len(CC_pol),
+            len(CC_pol[0]),
+            len(CC_pol[0][0]),
+        )
 
         # local minimum in AC
         p_nullWG1  = np.where((p_angle>PolPCS[band]-10) & (p_angle<PolPCS[band]+10))
         p_nullPolX = np.where((p_angle>PolRX[band][0]-10) & (p_angle<PolRX[band][0]+10))
         p_nullPolY = np.where((p_angle>PolRX[band][1]-10) & (p_angle<PolRX[band][1]+10))
-        print("Debug: ", p_nullWG1[0])
-        print("Debug: ", p_nullPolX[0])
-        print("Debug: ", p_nullPolY[0])
+        logger.debug("Debug: %s", p_nullWG1[0])
+        logger.debug("Debug: %s", p_nullPolX[0])
+        logger.debug("Debug: %s", p_nullPolY[0])
 
         idx_AC_nullWG1, idx_AC_nullPolX, idx_AC_nullPolY = [], [], []
         for antid in antidlist:
@@ -3186,9 +3231,9 @@ def doPCSAnalysisForBroadbandNoise(vis, sch, ech, polarizer_file=None):
             idx_AC_nullPolX.append(idx_nullPolX)
             idx_AC_nullPolY.append(idx_nullPolY)
 
-        print("Debug: ", idx_AC_nullWG1)
-        print("Debug: ", idx_AC_nullPolX)
-        print("Debug: ", idx_AC_nullPolY)
+        logger.debug("Debug: %s", idx_AC_nullWG1)
+        logger.debug("Debug: %s", idx_AC_nullPolX)
+        logger.debug("Debug: %s", idx_AC_nullPolY)
 
         # Plot: all antennas
         plt.ioff()
