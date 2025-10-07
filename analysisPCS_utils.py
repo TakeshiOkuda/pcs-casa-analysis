@@ -576,17 +576,17 @@ def getSpectralAutoData_hack(inputms,iant, dd, scanum):
         timesi = qa.time(timesi, prec=10, form='fits') # changed prec from 9 to 10 for 2-kHz SQLD data
         time.append(tu.get_datetime_from_isodatetime(timesi[0]))
 
-    flagData = np.zeros(specData.shape,dtype=np.complex)
-    for ii in range(len(specData)):
-        for jj in range(len(specData[0])):
-            for kk in range(len(specData[0][0])):
-                if specFlag[ii][jj][kk]==True:
-                    flagData[ii][jj][kk] = specData[ii][jj][kk]
-                    specData[ii][jj][kk] = np.complex(np.nan)
-                else:
-                    flagData[ii][jj][kk] = np.complex(np.nan)
+    target_dtype = np.complex128 if np.iscomplexobj(specData) else np.float64
+    specData = np.asarray(specData, dtype=target_dtype)
+    mask = np.asarray(specFlag, dtype=bool)
 
-    return [time, specData, flagData, specState]
+    cleaned_data = specData.copy()
+    cleaned_data[mask] = np.nan
+
+    flagData = np.full(specData.shape, np.nan, dtype=specData.dtype)
+    np.copyto(flagData, specData, where=mask)
+
+    return [time, cleaned_data, flagData, specState]
 
 #------------------------------------------------------------------------------
 def getSpectralData_hack(inputms, iant1, iant2, dd, scanum):
@@ -650,50 +650,41 @@ def getASDg(dt, h):
     # - M: only divisors of 'S'
     list_M = getDivisors(S)
 
-    # Total number of tau/T intervals in raw data set tmax/tau = S/M
-    list_N, tmp_M = [], []
-    for m in list_M:
-        if int(S/m)>=10:
-            list_N.append(int(S/m))
-            tmp_M.append(m)
-    list_M = np.array(tmp_M)
-    list_N = np.array(list_N)
-    print(S, list_M)
+    if list_M.size == 0:
+        return np.array([]), np.array([])
 
-    # ASDg calculation
-    T, ASDg = [], []
-    for i in range(len(list_M)):
-        M = list_M[i]
-        N = list_N[i]
+    list_N = (S // list_M).astype(int)
+    valid = list_N >= 10
+    list_M = list_M[valid]
+    list_N = list_N[valid]
 
-        T.append(np.int(M)*dt)
-        # Make average over tau
-        Hj = []
-        for j in range(N):
-            tmp = np.array([ h[M*j+k] for k in range(M)])
-            Hj.append(np.average(tmp))
-        Hj = np.array(Hj)
+    if list_M.size == 0:
+        return np.array([]), np.array([])
 
-        # Calculate ASDg
-        diff = np.array([ np.power(Hj[j+1]-Hj[j],2.0) for j in range(N-1) ])
-        tmp_ASDg = np.sqrt(0.5*np.average(diff))
-        ASDg.append(tmp_ASDg)
+    T = list_M.astype(float) * dt
+    ASDg = np.empty_like(T, dtype=float)
 
-    T = np.array(T)
-    ASDg = np.array(ASDg)
+    h = np.asarray(h, dtype=float)
+
+    for idx, (M, N) in enumerate(zip(list_M, list_N)):
+        Hj = h.reshape(N, M).mean(axis=1)
+        diff = np.diff(Hj)
+        ASDg[idx] = np.sqrt(0.5 * np.mean(diff * diff)) if diff.size else np.nan
 
     return T, ASDg
 
 def getDivisors(N):
+    if N <= 0:
+        return np.array([], dtype=int)
+
     divisors = []
-    for i in range(1, int(np.ceil(np.sqrt(N)))):
-        if N%i ==0:
+    limit = int(np.sqrt(N)) + 1
+    for i in range(1, limit):
+        if N % i == 0:
             divisors.append(i)
-            if i*i == N:
-                continue
-            divisors.append(int(N/i))
-    divisors = np.array(sorted(divisors))
-    return divisors
+            if i * i != N:
+                divisors.append(N // i)
+    return np.array(sorted(divisors), dtype=int)
 
 def getASDy(dt, h, tau):
     """
@@ -717,20 +708,21 @@ def getASDy(dt, h, tau):
     # Total number of ASDy calculation
     N_T = int(S/Nsample_max)
 
-    # Make samples across tau = M*dt
-    Hj = []
-    for j in range(N):
-        tmp = [ h[i+M*j] for i in range(M)]
-        Hj.append(np.average(tmp))
+    if M == 0 or N < 2:
+        return [], []
 
-    # ASDy calculation
-    diffT, ASDy = [], []
-    for k in range(N_T):
-        diffT.append((k+1)*tau)
-        # Calculate ASDy
-        diff = [ np.power(Hj[j+(k+1)]-Hj[j],2.0) for j in range(N-(k+1)) ]
-        tmp_ASDy = np.sqrt(0.5*np.average(diff)) 
-        ASDy.append(tmp_ASDy)
+    Hj = np.asarray(h[:N * M], dtype=float).reshape(N, M).mean(axis=1)
+
+    max_lag = min(N_T, N - 1)
+    if max_lag <= 0:
+        return [], []
+
+    diffT = (np.arange(1, max_lag + 1) * tau).tolist()
+    ASDy = []
+
+    for lag in range(1, max_lag + 1):
+        diff = Hj[lag:] - Hj[:-lag]
+        ASDy.append(np.sqrt(0.5 * np.mean(diff * diff)))
 
     return diffT, ASDy
 
@@ -1263,9 +1255,8 @@ def getCWSignal2(spec):
 # Return all products of CW signal
 def getCWSignal(spec):
 
-    npol  = len(spec)
-    ndata = len(spec[0])
-    nch   = len(spec[0][0])
+    spec = np.asarray(spec)
+    npol, ndata, nch = spec.shape
 
     ch = np.linspace(0, nch-1, num=nch)
     cwCh, noiseSpec, cwSpec  = [], [], []
@@ -1286,19 +1277,9 @@ def getCWSignal(spec):
         print("debug : spike CH error", Ch_diffmax, Ch_diffmin )
 
     # Vector average of correlation
-    cw_corr = []
+    cw_corr = spec[:, :, cwCh_ave].sum(axis=2)
 
-    for pol in range(npol):
-        tmp_pol = []
-        for ii in range(ndata):
-            tmp = 0.0 + 0.0j
-            for jj in cwCh_ave:
-                tmp += spec[pol][ii][jj]
-        
-            tmp_pol.append(np.average(tmp))
-        cw_corr.append(tmp_pol)
-
-    return cw_corr
+    return [cw_corr[pol].tolist() for pol in range(npol)]
 
 #------------------------------------------------------------------------------
 def readPolarizerFile(polfile):
