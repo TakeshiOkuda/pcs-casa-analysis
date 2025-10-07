@@ -393,32 +393,32 @@ def getALMADashboardInfo():
 
 def checkShadowingPCS():
 
-    pad_file = path2au+'/AOS_Pads_XYZ_ENU.txt'
-
-    f = open(pad_file,'r')
-    lines = f.readlines()
-    X, Y, Z = [], [], []
-    padList, diameterList = [], []
+    pad_file = Path(path2au) / 'AOS_Pads_XYZ_ENU.txt'
 
     #PCS ITRF: [2224412.407041001, -5438748.522481113, -2485917.0815638653]
     pcs_enu = np.array([-85.32698112, -5170.29232152, 329.22074719])
+    offset = np.array([-39.500318459, -720.398306146, -0.242313891])
 
-    for line in lines:
-        if  line.find('#')<0:
+    pad_vectors = {}
+
+    with open(pad_file, 'r') as f:
+        for line in f:
+            if '#' in line:
+                continue
             tokens = line.split()
-            X.append(float(tokens[0]))
-            Y.append(float(tokens[1]))
-            Z.append(float(tokens[2]))
+            if len(tokens) < 5:
+                continue
 
-            # adds [-39.500318459, -720.398306146, -0.242313891 ]
-            X[-1] += -39.500318459
-            Y[-1] += -720.398306146
-            Z[-1] += -0.242313891 
+            pad_id = tokens[4]
+            pad_position = np.array(list(map(float, tokens[:3]))) + offset
+            vec = pad_position - pcs_enu
+            pad_vectors[pad_id] = (
+                vec,
+                np.linalg.norm(vec),
+                float(tokens[3])
+            )
 
-        diameterList.append(tokens[3])
-        padList.append(tokens[4])
-
-    ant_list =[ "DA41", "DA42", "DA43", "DA44", "DA45", "DA46", 
+    ant_list =[ "DA41", "DA42", "DA43", "DA44", "DA45", "DA46",
                 "DA47", "DA48", "DA49", "DA50", "DA51", "DA52",
                 "DA53", "DA54", "DA55", "DA56", "DA57", "DA58",
                 "DA59", "DA60", "DA61", "DA62", "DA63", "DA64",
@@ -432,43 +432,43 @@ def checkShadowingPCS():
                 "CM07", "CM08", "CM09", "CM10", "CM11", "CM12",
                 "PM01", "PM02", "PM03", "PM04"
                 ]
-    
+
     ALMAInfo = getALMADashboardInfo()
+    if ALMAInfo is None:
+        return
 
-    pad_list = []
+    pad_by_ant = {}
     for ant in ant_list:
-        tmp = ALMAInfo[ALMAInfo['name']==ant]['pad'].values[0]
-        pad_list.append(tmp)
+        tmp = ALMAInfo[ALMAInfo['name']==ant]['pad'].values
+        if len(tmp) == 0:
+            continue
+        pad_by_ant[ant] = tmp[0]
 
-    for (ant0, pad0) in zip(ant_list, pad_list):
-        flag = 0
-        if pad0 in padList:
-            idx0 = padList.index(pad0)
-            vec0 = np.array([X[idx0],Y[idx0],Z[idx0]])
-            vec0 = vec0 - pcs_enu
-            dist0 = np.linalg.norm(vec0)
-            diam0 = float(diameterList[idx0])
+    entries = [
+        (ant, pad, *pad_vectors[pad])
+        for ant, pad in pad_by_ant.items()
+        if pad in pad_vectors
+    ]
 
-            for (ant1, pad1) in zip(ant_list, pad_list):
-                if pad1 in padList:
-                    idx1 = padList.index(pad1)
-                    vec1 = np.array([X[idx1],Y[idx1],Z[idx1]])
-                    vec1 = vec1 - pcs_enu
-                    dist1 = np.linalg.norm(vec1)
-                    diam1 = float(diameterList[idx1])
+    if not entries:
+        return
 
-                    # only if ant0 is more distant than ant1
-                    if dist0>=dist1 and idx0 != idx1:
-                        dist  = dist0
-                        inner_product = np.dot(vec0,vec1)/np.linalg.norm(vec0)/np.linalg.norm(vec1)
-                        theta = np.arccos(inner_product)
-                        baseline = dist*np.sin(theta) 
-                        if baseline<(diam0+diam1)/2.0:
-                            #print(ant0, ant1, vec0, dist, baseline)
-                            flag+=1
+    ants, pads, vectors, distances, diameters = zip(*entries)
+    vectors = np.vstack(vectors)
+    distances = np.array(distances)
+    diameters = np.array(diameters)
+    unit_vectors = vectors / distances[:, None]
 
-        if flag==0:
-            print(ant0, pad0, " no blocking")
+    for idx, (ant, pad) in enumerate(zip(ants, pads)):
+        dist0 = distances[idx]
+        diam0 = diameters[idx]
+        cos_theta = np.clip(unit_vectors @ unit_vectors[idx], -1.0, 1.0)
+        sin_theta = np.sqrt(1.0 - np.square(cos_theta))
+        baselines = dist0 * sin_theta
+        diameter_limits = 0.5 * (diam0 + diameters)
+        mask = (distances <= dist0) & (np.arange(len(ants)) != idx)
+        if not np.any(baselines[mask] < diameter_limits[mask]):
+            print(ant, pad, " no blocking")
 
     return
 
