@@ -40,15 +40,15 @@ def initOptionsParser():
 
 #------------------------------------------------------------------------------
 def checkOptions(args):
-    print(f"ExUid: {args.file}")
+    logger.info("ExUid: %s", args.file)
     # Check antenna
     if args.polarizer is None:
-        print("A file of polarizer angles is not specified. Skip an analysis of a polarizer rotation measurement.")
+        logger.info("A file of polarizer angles is not specified. Skip an analysis of a polarizer rotation measurement.")
     else:
         if os.path.isfile(args.polarizer):
-            print(f"{args.polarizer} is found.")
+            logger.info("%s is found.", args.polarizer)
         else:
-            print(f"{args.polarizer} is not found. Aborted this script.")
+            logger.error("%s is not found. Aborted this script.", args.polarizer)
             sys.exit(0)
         
 #------------------------------------------------------------------------------
