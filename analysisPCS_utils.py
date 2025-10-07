@@ -7,7 +7,7 @@ import os, sys
 import csv
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 from scipy.signal import savgol_filter
@@ -576,17 +576,17 @@ def getSpectralAutoData_hack(inputms,iant, dd, scanum):
         timesi = qa.time(timesi, prec=10, form='fits') # changed prec from 9 to 10 for 2-kHz SQLD data
         time.append(tu.get_datetime_from_isodatetime(timesi[0]))
 
-    flagData = np.zeros(specData.shape,dtype=np.complex)
-    for ii in range(len(specData)):
-        for jj in range(len(specData[0])):
-            for kk in range(len(specData[0][0])):
-                if specFlag[ii][jj][kk]==True:
-                    flagData[ii][jj][kk] = specData[ii][jj][kk]
-                    specData[ii][jj][kk] = np.complex(np.nan)
-                else:
-                    flagData[ii][jj][kk] = np.complex(np.nan)
+    target_dtype = np.complex128 if np.iscomplexobj(specData) else np.float64
+    specData = np.asarray(specData, dtype=target_dtype)
+    mask = np.asarray(specFlag, dtype=bool)
 
-    return [time, specData, flagData, specState]
+    cleaned_data = specData.copy()
+    cleaned_data[mask] = np.nan
+
+    flagData = np.full(specData.shape, np.nan, dtype=specData.dtype)
+    np.copyto(flagData, specData, where=mask)
+
+    return [time, cleaned_data, flagData, specState]
 
 #------------------------------------------------------------------------------
 def getSpectralData_hack(inputms, iant1, iant2, dd, scanum):
@@ -650,50 +650,41 @@ def getASDg(dt, h):
     # - M: only divisors of 'S'
     list_M = getDivisors(S)
 
-    # Total number of tau/T intervals in raw data set tmax/tau = S/M
-    list_N, tmp_M = [], []
-    for m in list_M:
-        if int(S/m)>=10:
-            list_N.append(int(S/m))
-            tmp_M.append(m)
-    list_M = np.array(tmp_M)
-    list_N = np.array(list_N)
-    print(S, list_M)
+    if list_M.size == 0:
+        return np.array([]), np.array([])
 
-    # ASDg calculation
-    T, ASDg = [], []
-    for i in range(len(list_M)):
-        M = list_M[i]
-        N = list_N[i]
+    list_N = (S // list_M).astype(int)
+    valid = list_N >= 10
+    list_M = list_M[valid]
+    list_N = list_N[valid]
 
-        T.append(np.int(M)*dt)
-        # Make average over tau
-        Hj = []
-        for j in range(N):
-            tmp = np.array([ h[M*j+k] for k in range(M)])
-            Hj.append(np.average(tmp))
-        Hj = np.array(Hj)
+    if list_M.size == 0:
+        return np.array([]), np.array([])
 
-        # Calculate ASDg
-        diff = np.array([ np.power(Hj[j+1]-Hj[j],2.0) for j in range(N-1) ])
-        tmp_ASDg = np.sqrt(0.5*np.average(diff))
-        ASDg.append(tmp_ASDg)
+    T = list_M.astype(float) * dt
+    ASDg = np.empty_like(T, dtype=float)
 
-    T = np.array(T)
-    ASDg = np.array(ASDg)
+    h = np.asarray(h, dtype=float)
+
+    for idx, (M, N) in enumerate(zip(list_M, list_N)):
+        Hj = h.reshape(N, M).mean(axis=1)
+        diff = np.diff(Hj)
+        ASDg[idx] = np.sqrt(0.5 * np.mean(diff * diff)) if diff.size else np.nan
 
     return T, ASDg
 
 def getDivisors(N):
+    if N <= 0:
+        return np.array([], dtype=int)
+
     divisors = []
-    for i in range(1, int(np.ceil(np.sqrt(N)))):
-        if N%i ==0:
+    limit = int(np.sqrt(N)) + 1
+    for i in range(1, limit):
+        if N % i == 0:
             divisors.append(i)
-            if i*i == N:
-                continue
-            divisors.append(int(N/i))
-    divisors = np.array(sorted(divisors))
-    return divisors
+            if i * i != N:
+                divisors.append(N // i)
+    return np.array(sorted(divisors), dtype=int)
 
 def getASDy(dt, h, tau):
     """
@@ -717,20 +708,21 @@ def getASDy(dt, h, tau):
     # Total number of ASDy calculation
     N_T = int(S/Nsample_max)
 
-    # Make samples across tau = M*dt
-    Hj = []
-    for j in range(N):
-        tmp = [ h[i+M*j] for i in range(M)]
-        Hj.append(np.average(tmp))
+    if M == 0 or N < 2:
+        return [], []
 
-    # ASDy calculation
-    diffT, ASDy = [], []
-    for k in range(N_T):
-        diffT.append((k+1)*tau)
-        # Calculate ASDy
-        diff = [ np.power(Hj[j+(k+1)]-Hj[j],2.0) for j in range(N-(k+1)) ]
-        tmp_ASDy = np.sqrt(0.5*np.average(diff)) 
-        ASDy.append(tmp_ASDy)
+    Hj = np.asarray(h[:N * M], dtype=float).reshape(N, M).mean(axis=1)
+
+    max_lag = min(N_T, N - 1)
+    if max_lag <= 0:
+        return [], []
+
+    diffT = (np.arange(1, max_lag + 1) * tau).tolist()
+    ASDy = []
+
+    for lag in range(1, max_lag + 1):
+        diff = Hj[lag:] - Hj[:-lag]
+        ASDy.append(np.sqrt(0.5 * np.mean(diff * diff)))
 
     return diffT, ASDy
 
@@ -886,139 +878,182 @@ def checkSqldRotation(vis, polarizer_file=None, Xpol=False, interactive=False):
 def doPCSAnalysisForSQLD(vis, polarizer_file=None, list_az=None, Xpol=False):
 
     intent = 'CALIBRATE_DELAY#ON_SOURCE'
-    repdir = 'report_'+vis.split('.')[0]
+    repdir = Path(f"report_{vis.split('.')[0]}")
     prefix = vis.split('_')[-1][:-3]
 
-    if (os.path.isdir(repdir) != True):
-        os.system("mkdir %s" % repdir)
+    repdir.mkdir(exist_ok=True)
 
-    antlist  = au.getAntennaNames(vis)
+    antlist = au.getAntennaNames(vis)
     scanlist = getScansForIntent(vis, intent)
     scan = scanlist[0]
     SpwsSQLD, SpwsFR, SpwsCA = getSpwsForScan(vis, scan, intent)
 
-    nant  = len(antlist) 
+    nant = len(antlist)
     nspw = len(SpwsSQLD)
 
+    if nspw == 0:
+        logger.warning("No SQLD spectral windows found for %s", vis)
+        return
+
     # Check polarization angle
-    if polarizer_file != None and polarizer_file!='None':
+    if polarizer_file not in (None, 'None'):
         p_time, p_angle = readPolarizerFile(polarizer_file)
-        ffit = open('%s/%s_fitting_SQLD.csv' %(repdir, prefix), 'w')
+        ffit = (repdir / f"{prefix}_fitting_SQLD.csv").open('w')
         fit_wrt = csv.writer(ffit)
         fit_wrt.writerow(['AE','SPW','Pol','WG1','WG1_err','RX','RX_err','Amp','Amp_err','Offset','Offset_err'])
+    else:
+        ffit = None
+        fit_wrt = None
+        p_time = p_angle = None
 
-    for antidx in range(nant):
-        
-        ant = antlist[antidx]
-        antid = au.getAntennaIndex(vis,ant)
+    for antidx, ant in enumerate(antlist):
+
+        antid = au.getAntennaIndex(vis, ant)
         print("Antenna: %s [%d/%d]" % (ant, antidx+1, nant))
 
         plt.ioff()
-        figTS, axsTS = plt.subplots(4, 2, figsize=[8.27,11.69],dpi=200)
-        figTS.subplots_adjust(left=0.10,right=0.95,bottom=0.05,top=0.95,hspace=0.3,wspace=0.3)
+        figTS, axsTS = plt.subplots(4, 2, figsize=[8.27, 11.69], dpi=200)
+        figTS.subplots_adjust(left=0.10, right=0.95, bottom=0.05, top=0.95, hspace=0.3, wspace=0.3)
 
-        figGS, axsGS = plt.subplots(4, 2, figsize=[8.27,11.69],dpi=200)
-        figGS.subplots_adjust(left=0.10,right=0.95,bottom=0.05,top=0.95,hspace=0.3,wspace=0.3)
+        figGS, axsGS = plt.subplots(4, 2, figsize=[8.27, 11.69], dpi=200)
+        figGS.subplots_adjust(left=0.10, right=0.95, bottom=0.05, top=0.95, hspace=0.3, wspace=0.3)
 
-        rawdata, vardata = [], []
+        time_axis = None
+        raw_columns: List[List[np.ndarray]] = []
+        asd_columns: List[Tuple[np.ndarray, List[np.ndarray]]] = []
 
-        if polarizer_file!=None:
-            figPol, axsPol = plt.subplots(2,1,figsize=[8.27, 11.69],dpi=200)
-            figPol.subplots_adjust(left=0.10,right=0.95,bottom=0.05,top=0.95,hspace=0.3,wspace=0.3)
+        if polarizer_file not in (None, 'None'):
+            figPol, axsPol = plt.subplots(2, 1, figsize=[8.27, 11.69], dpi=200)
+            figPol.subplots_adjust(left=0.10, right=0.95, bottom=0.05, top=0.95, hspace=0.3, wspace=0.3)
 
-        for spwidx in range(len(SpwsSQLD)):
+        n_ts_rows, n_ts_cols = axsTS.shape
+        n_gs_rows, n_gs_cols = axsGS.shape
 
-            spw  = SpwsSQLD[spwidx]
+        for spwidx, spw in enumerate(SpwsSQLD):
+
             ddid = au.getDataDescriptionId(vis, spw)
 
             print("SPW    : %d [%d/%d]" % (spw, spwidx+1, nspw))
 
             freq = getFrequenciesGHz(vis, spw)
-            if    84.0 <= freq[0] < 116: band='3'
-            elif 211.0 <= freq[0] < 275: band='6'
-            elif 275.0 <= freq[0] < 373: band='7'
+            if 84.0 <= freq[0] < 116:
+                band = '3'
+            elif 211.0 <= freq[0] < 275:
+                band = '6'
+            elif 275.0 <= freq[0] < 373:
+                band = '7'
+            else:
+                band = ''
 
-            time,data,fdata,state = getSpectralAutoData_hack(vis,antid,ddid,scan)
-            npol  = len(data)
-            ndump = len(data[0][0])
+            time, data, fdata, state = getSpectralAutoData_hack(vis, antid, ddid, scan)
+            data = np.asarray(data)
+            npol = data.shape[0]
+            signals = np.asarray(data[:, 0, :])  # SQLD is 1 channel per baseband
 
-            T = []
-            for ii in range(ndump):
-                T.append( (time[ii]-time[0]).total_seconds())
+            if signals.ndim != 2:
+                logger.error("Unexpected SQLD data shape for %s SPW %s: %s", ant, spw, signals.shape)
+                continue
 
-            rawdata.append(data)
-            tmp_var = []
+            ndump = signals.shape[1]
+
+            if time_axis is None:
+                base_time = time[0]
+                time_axis = np.fromiter(((t - base_time).total_seconds() for t in time), dtype=float, count=len(time))
+            else:
+                current_time_axis = np.fromiter(((t - time[0]).total_seconds() for t in time), dtype=float, count=len(time))
+                if current_time_axis.size != time_axis.size or not np.allclose(current_time_axis, time_axis):
+                    logger.warning("Time axis mismatch for %s SPW %s; using first SPW timing", ant, spw)
+
+            raw_columns.append([])
+            asd_columns.append((np.array([], dtype=float), []))
+
+            dtime = time_axis[1] - time_axis[0] if time_axis.size > 1 else 0.0
 
             for pol in range(npol):
-                
-                dtime = T[1] - T[0]
-                dG = np.real(data[pol][0])/np.average(np.real(data[pol][0]))
+
+                signal_series = signals[pol]
+                real_signal = np.real(signal_series)
+                mean_signal = np.mean(real_signal)
+                dG = real_signal / mean_signal if mean_signal else np.zeros_like(real_signal)
                 diffT, ASDg = getASDg(dtime, dG)
-                tmp_var.append(ASDg)
-                
-                if pol==0:
+
+                asd_columns[-1] = (diffT if diffT.size else asd_columns[-1][0], asd_columns[-1][1] + [ASDg])
+                raw_columns[-1].append(np.abs(signal_series))
+
+                if pol == 0:
                     color = 'b'
-                    title = "%s %s Pol-X SPW%d Scan%d" % (prefix,ant,spw,scan)
-                elif pol==1:
+                    title = "%s %s Pol-X SPW%d Scan%d" % (prefix, ant, spw, scan)
+                elif pol == 1:
                     color = 'g'
-                    title = "%s %s Pol-Y SPW%d Scan%d" % (prefix,ant,spw,scan)
+                    title = "%s %s Pol-Y SPW%d Scan%d" % (prefix, ant, spw, scan)
+                else:
+                    color = None
+                    title = "%s %s Pol-%d SPW%d Scan%d" % (prefix, ant, pol, spw, scan)
 
-                # Time series plot
-                axsTS[spwidx][pol].plot(T,np.real(data[pol][0])*1e3, color=color)
-                axsTS[spwidx][pol].set_title(title)
-                axsTS[spwidx][pol].set_xlabel("Time [UTC]")
-                axsTS[spwidx][pol].set_ylabel("BB Power [mW]")
-                axsTS[spwidx][pol].tick_params(axis='both', which='major')
-                axsTS[spwidx][pol].grid(visible=True, linestyle='dashed')
+                if spwidx < n_ts_rows and pol < n_ts_cols:
+                    target_axes = axsTS[spwidx][pol]
+                    target_axes.plot(time_axis, real_signal * 1e3, color=color)
+                    target_axes.set_title(title)
+                    target_axes.set_xlabel("Time [UTC]")
+                    target_axes.set_ylabel("BB Power [mW]")
+                    target_axes.tick_params(axis='both', which='major')
+                    target_axes.grid(visible=True, linestyle='dashed')
 
-                # Gain stability plot
-                axsGS[spwidx][pol].plot(diffT, ASDg, color=color)
-                axsGS[spwidx][pol].set_xscale('log')
-                axsGS[spwidx][pol].set_yscale('log')
-                axsGS[spwidx][pol].set_xlim(1e-2, 1e3)
-                axsGS[spwidx][pol].set_ylim(1e-4, 1)
-                axsGS[spwidx][pol].set_title(title)
-                axsGS[spwidx][pol].set_xlabel("Time [sec]")
-                axsGS[spwidx][pol].set_ylabel("Allan Standard Deviation ASDg(2,T)")
-                axsGS[spwidx][pol].tick_params(axis='both', which='major')
-                axsGS[spwidx][pol].grid(visible=True, linestyle='dashed')
-            
-            vardata.append(tmp_var)
+                if spwidx < n_gs_rows and pol < n_gs_cols:
+                    gain_axes = axsGS[spwidx][pol]
+                    gain_axes.plot(diffT, ASDg, color=color)
+                    gain_axes.set_xscale('log')
+                    gain_axes.set_yscale('log')
+                    gain_axes.set_xlim(1e-2, 1e3)
+                    gain_axes.set_ylim(1e-4, 1)
+                    gain_axes.set_title(title)
+                    gain_axes.set_xlabel("Time [sec]")
+                    gain_axes.set_ylabel("Allan Standard Deviation ASDg(2,T)")
+                    gain_axes.tick_params(axis='both', which='major')
+                    gain_axes.grid(visible=True, linestyle='dashed')
 
-            # polarizer rotaion
-            if (polarizer_file != None and list_az!=None):
+            if polarizer_file not in (None, 'None') and list_az is not None and band:
 
-                # check polarizer movement and signal
                 checkSqldRotation(vis=vis, polarizer_file=polarizer_file, Xpol=Xpol, interactive=False)
 
+                idx_arrays = convertTimeAngle_Xpol(time, p_time, p_angle) if Xpol else convertTimeAngle(time, p_time, p_angle)
+                idx_arrays = [np.asarray(idx, dtype=int) for idx in idx_arrays]
+
+                flat_stop = np.concatenate([idx for idx in idx_arrays if idx.size], dtype=int) if any(idx.size for idx in idx_arrays) else np.array([], dtype=int)
+                all_idx = np.arange(time_axis.size, dtype=int)
+                move_idx = np.setdiff1d(all_idx, flat_stop, assume_unique=True)
+
                 colorlist = ['r', 'g', 'b', 'c', 'm', 'y', 'k']
-                if Xpol:
-                    pol_idx = convertTimeAngle_Xpol(time, p_time, p_angle)
-                else:
-                    pol_idx = convertTimeAngle(time, p_time, p_angle)
 
                 pol_ave, pol_rms = [], []
                 for pol in range(npol):
+                    series_abs = np.abs(signals[pol]) * 1e3
+                    ave = []
+                    rms = []
+                    for idx in idx_arrays:
+                        if idx.size:
+                            chunk = series_abs[idx]
+                            ave.append(np.mean(chunk))
+                            rms.append(np.std(chunk))
+                        else:
+                            ave.append(np.nan)
+                            rms.append(np.nan)
+                    pol_ave.append(np.array(ave))
+                    pol_rms.append(np.array(rms))
 
-                    tmp_ave, tmp_rms = [], []
-                    for ii in range(len(p_angle)):
-                        tmp_signal = []
-                        for jj in range(len(pol_idx[ii])):
-                            tmp_signal.append(data[pol][0][pol_idx[ii][jj]])
+                    move_times = time_axis[move_idx]
+                    stop_times = time_axis[flat_stop] if flat_stop.size else np.array([], dtype=float)
+                    move_signal = signals[pol][move_idx]
+                    stop_signal = signals[pol][flat_stop] if flat_stop.size else np.array([], dtype=signals.dtype)
 
-                        wAve = np.mean(np.absolute(tmp_signal))
-                        wStd = np.std(np.absolute(tmp_signal))
-                        tmp_ave.append(wAve*1e3)
-                        tmp_rms.append(wStd*1e3)
-                                
-                    pol_ave.append(tmp_ave)
-                    pol_rms.append(tmp_rms)
-                
+                    if spwidx < n_ts_rows and pol < n_ts_cols:
+                        axsTS[spwidx][pol].plot(move_times, np.real(move_signal) * 1e3, color='k', marker='x', linestyle='None')
+                        axsTS[spwidx][pol].plot(stop_times, np.real(stop_signal) * 1e3, color=colorlist[spwidx % len(colorlist)], marker='.', linestyle='None')
+
                 angWG1 = PolPCS[band]
-                angRX  = PolRX[band]
+                angRX = PolRX[band]
                 for pol in range(npol):
 
-                    # fitting
                     """
                     popt,pcov = fitCurvePCS(p_angle,pol_ave[pol],pol_rms[pol],angWG1,angRX[pol])
                     angleWG1f = popt[0]
@@ -1031,101 +1066,100 @@ def doPCSAnalysisForSQLD(vis, polarizer_file=None, list_az=None, Xpol=False):
                     angleRXf_err  = perr[1]
                     Af_err        = perr[2]
                     Bf_err        = perr[3]
-                    
+
                     ang_num = 360
                     fitangle = np.linspace(0,ang_num,num=ang_num)*(np.max(p_angle)-np.min(p_angle))/ang_num+np.min(p_angle)
                     fitAmp = CurvePCS(fitangle, angleWG1f, angleRXf, Af, Bf)
                     fit_wrt.writerow([ant,spw,pol,angleWG1f,angleWG1f_err,angleRXf,angleRXf_err,Af,Af_err,Bf,Bf_err])
-                    
+
                     axsPol[pol].errorbar(p_angle, pol_ave[pol], yerr=pol_rms[pol], fmt='o', color=colorlist[spwidx])
                     axsPol[pol].plot(fitangle, fitAmp, color=colorlist[spwidx])
                     """
 
-                    # new fitting
-                    phi_WG2   = 0.0
-                    theta_RX  = angRX[pol]
+                    phi_WG2 = 0.0
+                    theta_RX = angRX[pol]
                     theta_WG1 = angWG1
-                    phi_WG1   = 20.0
-                    alpha     = list_az[antid]
+                    phi_WG1 = 20.0
+                    alpha = list_az[antid]
 
-                    popt,pcov = fittingPCS(p_angle, pol_ave[pol], pol_rms[pol], phi_WG2, theta_RX, theta_WG1, phi_WG1, alpha)
+                    popt, pcov = fittingPCS(p_angle, pol_ave[pol], pol_rms[pol], phi_WG2, theta_RX, theta_WG1, phi_WG1, alpha)
 
-                    phi_WG2   = popt[0]
-                    theta_RX  = popt[1]
-                    theta_WG1 = popt[2]
-                    phi_WG1   = popt[3]
-                    alpha     = popt[4]
-                    P0        = popt[5]
-                    Poffset   = popt[6]
-
+                    phi_WG2, theta_RX, theta_WG1, phi_WG1, alpha, P0, Poffset = popt
                     perr = np.sqrt(np.diag(pcov))
-                    phi_WG2_err   = perr[0]
-                    theta_RX_err  = perr[1]
-                    theta_WG1_err = perr[2]
-                    phi_WG2_err   = perr[3]
-                    alpha_err     = perr[4]
-                    P0_err        = perr[5]
-                    Poffset_err   = perr[6]
+                    phi_WG2_err, theta_RX_err, theta_WG1_err, phi_WG1_err, alpha_err, P0_err, Poffset_err = perr
 
                     ang_num = 360
-                    fitangle = np.linspace(0,ang_num,num=ang_num)*(np.max(p_angle)-np.min(p_angle))/ang_num+np.min(p_angle)
-                    fitAmp = []
-                    for angle in fitangle:
-                        amp = responsePCS(angle,phi_WG2,theta_RX,theta_WG1,phi_WG1,alpha,P0,Poffset)
-                        fitAmp.append(amp)
-                    axsPol[pol].errorbar(p_angle, pol_ave[pol], yerr=pol_rms[pol], fmt='o', color=colorlist[spwidx])
-                    axsPol[pol].plot(fitangle, fitAmp, color=colorlist[spwidx])
+                    fitangle = np.linspace(0, ang_num, num=ang_num) * (np.max(p_angle) - np.min(p_angle)) / ang_num + np.min(p_angle)
+                    fitAmp = responsePCS(fitangle, phi_WG2, theta_RX, theta_WG1, phi_WG1, alpha, P0, Poffset)
+                    axsPol[pol].errorbar(p_angle, pol_ave[pol], yerr=pol_rms[pol], fmt='o', color=colorlist[spwidx % len(colorlist)])
+                    axsPol[pol].plot(fitangle, fitAmp, color=colorlist[spwidx % len(colorlist)])
+
+                    if ffit is not None:
+                        fit_wrt.writerow([ant, spw, pol, phi_WG2, phi_WG2_err, theta_RX, theta_RX_err, P0, P0_err, Poffset, Poffset_err])
 
                     print(ant, spw, pol, phi_WG2, theta_RX, theta_WG1, phi_WG1, alpha, P0, Poffset)
 
-                    if pol==0:
-                        title = "%s %s Pol-X" % (prefix,ant)
-                    elif pol==1:
-                        title = "%s %s Pol-Y" % (prefix,ant)
+                    if pol == 0:
+                        title = "%s %s Pol-X" % (prefix, ant)
+                    elif pol == 1:
+                        title = "%s %s Pol-Y" % (prefix, ant)
+                    else:
+                        title = "%s %s Pol-%d" % (prefix, ant, pol)
                     axsPol[pol].set_title(title)
                     axsPol[pol].set_xlabel("WG2 Polarizer angle [deg]")
                     axsPol[pol].set_ylabel("BB Power [mW]")
                     axsPol[pol].tick_params(axis='both', which='major')
                     axsPol[pol].grid(visible=True, linestyle='dashed')
 
-        figTS.savefig('%s/%s_%s_Sqld.png' % (repdir,prefix,ant))
-        figGS.savefig('%s/%s_%s_Sqld_AllanVar.png' % (repdir,prefix,ant))
+        figTS.savefig(repdir / f"{prefix}_{ant}_Sqld.png")
+        figGS.savefig(repdir / f"{prefix}_{ant}_Sqld_AllanVar.png")
         figTS.clf()
         figGS.clf()
 
-        if polarizer_file!=None:
-            figPol.savefig('%s/%s_%s_SQLD_Pol.png' % (repdir,prefix,ant))
+        if polarizer_file not in (None, 'None'):
+            figPol.savefig(repdir / f"{prefix}_{ant}_SQLD_Pol.png")
             figPol.clf()
 
         plt.close('all')
 
-        #Write results in csvfiles
-        fraw = open('%s/%s_%s_SQLD_Raw.csv' %(repdir, prefix, ant), 'w')
-        fvar = open('%s/%s_%s_SQLD_AllanVar.csv' %(repdir, prefix, ant), 'w')
-        raw_wrt = csv.writer(fraw)
-        var_wrt = csv.writer(fvar)
+        if time_axis is None:
+            continue
 
-        header = ['Time', 'P0 BB_1', 'P1 BB_1', 'P0 BB_2', 'P1 BB_2',
-                  'P0 BB_3', 'P1 BB_3', 'P0 BB_4', 'P1 BB_4']
+        header = ['Time']
+        flat_raw_cols: List[np.ndarray] = []
+        for spwidx, spw_cols in enumerate(raw_columns):
+            for pol_idx, col in enumerate(spw_cols):
+                header.append(f"P{pol_idx} BB_{spwidx + 1}")
+                flat_raw_cols.append(np.asarray(col, dtype=float))
 
-        raw_wrt.writerow(header)
-        var_wrt.writerow(header)
+        raw_matrix = np.column_stack([time_axis] + flat_raw_cols) if flat_raw_cols else time_axis[:, None]
 
-        for ii in range(len(rawdata[0][0][0])):
-            raw_wrt.writerow([T[ii], 
-                              abs(rawdata[0][0][0][ii]), abs(rawdata[0][1][0][ii]), 
-                              abs(rawdata[1][0][0][ii]), abs(rawdata[1][1][0][ii]), 
-                              abs(rawdata[2][0][0][ii]), abs(rawdata[2][1][0][ii]), 
-                              abs(rawdata[3][0][0][ii]), abs(rawdata[3][1][0][ii])]) 
+        with (repdir / f"{prefix}_{ant}_SQLD_Raw.csv").open('w', newline='') as fraw:
+            raw_wrt = csv.writer(fraw)
+            raw_wrt.writerow(header)
+            raw_wrt.writerows(raw_matrix)
 
-        for ii in range(len(vardata[0][0])):
-            var_wrt.writerow([diffT[ii], 
-                              vardata[0][0][ii], vardata[0][1][ii], 
-                              vardata[1][0][ii], vardata[1][1][ii], 
-                              vardata[2][0][ii], vardata[2][1][ii], 
-                              vardata[3][0][ii], vardata[3][1][ii]])
-        fraw.close()
-        fvar.close()
+        valid_diffTs = [diffT for diffT, _ in asd_columns if diffT.size]
+        if valid_diffTs:
+            min_len = min(len(diffT) for diffT in valid_diffTs)
+            diffT_ref = valid_diffTs[0][:min_len]
+
+            var_header = ['Time']
+            flat_var_cols: List[np.ndarray] = []
+            for spwidx, (diffT, cols) in enumerate(asd_columns):
+                for pol_idx, col in enumerate(cols):
+                    var_header.append(f"P{pol_idx} BB_{spwidx + 1}")
+                    flat_var_cols.append(np.asarray(col[:min_len], dtype=float))
+
+            var_matrix = np.column_stack([diffT_ref] + flat_var_cols)
+
+            with (repdir / f"{prefix}_{ant}_SQLD_AllanVar.csv").open('w', newline='') as fvar:
+                var_wrt = csv.writer(fvar)
+                var_wrt.writerow(var_header)
+                var_wrt.writerows(var_matrix)
+
+    if ffit is not None:
+        ffit.close()
 
 
 #------------------------------------------------------------------------------
@@ -1263,9 +1297,8 @@ def getCWSignal2(spec):
 # Return all products of CW signal
 def getCWSignal(spec):
 
-    npol  = len(spec)
-    ndata = len(spec[0])
-    nch   = len(spec[0][0])
+    spec = np.asarray(spec)
+    npol, ndata, nch = spec.shape
 
     ch = np.linspace(0, nch-1, num=nch)
     cwCh, noiseSpec, cwSpec  = [], [], []
@@ -1286,19 +1319,9 @@ def getCWSignal(spec):
         print("debug : spike CH error", Ch_diffmax, Ch_diffmin )
 
     # Vector average of correlation
-    cw_corr = []
+    cw_corr = spec[:, :, cwCh_ave].sum(axis=2)
 
-    for pol in range(npol):
-        tmp_pol = []
-        for ii in range(ndata):
-            tmp = 0.0 + 0.0j
-            for jj in cwCh_ave:
-                tmp += spec[pol][ii][jj]
-        
-            tmp_pol.append(np.average(tmp))
-        cw_corr.append(tmp_pol)
-
-    return cw_corr
+    return [cw_corr[pol].tolist() for pol in range(npol)]
 
 #------------------------------------------------------------------------------
 def readPolarizerFile(polfile):
